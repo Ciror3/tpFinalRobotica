@@ -1,0 +1,26 @@
+[0.487s] Invoking command in '/home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/src/tpFinalA': PYTHONPATH=/home/ciror/Desktop/robotica/tps/tpFinalA/build/tpFinalA/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/ciror/Desktop/robotica/tps/tpFinalA/install/tpFinalA/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../../build/tpFinalA build --build-base /home/ciror/Desktop/robotica/tps/tpFinalA/build/tpFinalA/build install --record /home/ciror/Desktop/robotica/tps/tpFinalA/build/tpFinalA/install.log --single-version-externally-managed install_data
+[0.684s] running egg_info
+[0.684s] writing ../../../build/tpFinalA/tpFinalA.egg-info/PKG-INFO
+[0.684s] writing dependency_links to ../../../build/tpFinalA/tpFinalA.egg-info/dependency_links.txt
+[0.684s] writing entry points to ../../../build/tpFinalA/tpFinalA.egg-info/entry_points.txt
+[0.684s] writing requirements to ../../../build/tpFinalA/tpFinalA.egg-info/requires.txt
+[0.684s] writing top-level names to ../../../build/tpFinalA/tpFinalA.egg-info/top_level.txt
+[0.685s] reading manifest file '../../../build/tpFinalA/tpFinalA.egg-info/SOURCES.txt'
+[0.687s] adding license file 'LICENSE'
+[0.687s] writing manifest file '../../../build/tpFinalA/tpFinalA.egg-info/SOURCES.txt'
+[0.687s] running build
+[0.687s] running build_py
+[0.687s] copying tpFinalA/slam.py -> /home/ciror/Desktop/robotica/tps/tpFinalA/build/tpFinalA/build/lib/tpFinalA
+[0.688s] running install
+[0.688s] running install_lib
+[0.688s] copying /home/ciror/Desktop/robotica/tps/tpFinalA/build/tpFinalA/build/lib/tpFinalA/slam.py -> /home/ciror/Desktop/robotica/tps/tpFinalA/install/tpFinalA/lib/python3.10/site-packages/tpFinalA
+[0.689s] byte-compiling /home/ciror/Desktop/robotica/tps/tpFinalA/install/tpFinalA/lib/python3.10/site-packages/tpFinalA/slam.py to slam.cpython-310.pyc
+[0.692s] running install_data
+[0.692s] running install_egg_info
+[0.694s] removing '/home/ciror/Desktop/robotica/tps/tpFinalA/install/tpFinalA/lib/python3.10/site-packages/tpFinalA-0.0.0-py3.10.egg-info' (and everything under it)
+[0.694s] Copying ../../../build/tpFinalA/tpFinalA.egg-info to /home/ciror/Desktop/robotica/tps/tpFinalA/install/tpFinalA/lib/python3.10/site-packages/tpFinalA-0.0.0-py3.10.egg-info
+[0.695s] running install_scripts
+[0.708s] Installing my_fastslam script to /home/ciror/Desktop/robotica/tps/tpFinalA/install/tpFinalA/lib/tpFinalA
+[0.709s] Installing my_odometry script to /home/ciror/Desktop/robotica/tps/tpFinalA/install/tpFinalA/lib/tpFinalA
+[0.709s] writing list of installed files to '/home/ciror/Desktop/robotica/tps/tpFinalA/build/tpFinalA/install.log'
+[0.727s] Invoked command in '/home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/src/tpFinalA' returned '0': PYTHONPATH=/home/ciror/Desktop/robotica/tps/tpFinalA/build/tpFinalA/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/ciror/Desktop/robotica/tps/tpFinalA/install/tpFinalA/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../../build/tpFinalA build --build-base /home/ciror/Desktop/robotica/tps/tpFinalA/build/tpFinalA/build install --record /home/ciror/Desktop/robotica/tps/tpFinalA/build/tpFinalA/install.log --single-version-externally-managed install_data

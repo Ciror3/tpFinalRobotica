@@ -1,0 +1,23 @@
+running develop
+running egg_info
+creating tpFinalA.egg-info
+writing tpFinalA.egg-info/PKG-INFO
+writing dependency_links to tpFinalA.egg-info/dependency_links.txt
+writing entry points to tpFinalA.egg-info/entry_points.txt
+writing requirements to tpFinalA.egg-info/requires.txt
+writing top-level names to tpFinalA.egg-info/top_level.txt
+writing manifest file 'tpFinalA.egg-info/SOURCES.txt'
+reading manifest file 'tpFinalA.egg-info/SOURCES.txt'
+writing manifest file 'tpFinalA.egg-info/SOURCES.txt'
+running build_ext
+Creating /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/install/tpFinalA/lib/python3.10/site-packages/tpFinalA.egg-link (link to .)
+Installing my_fastslam script to /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/install/tpFinalA/lib/tpFinalA
+Installing my_odometry script to /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/install/tpFinalA/lib/tpFinalA
+
+Installed /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/build/tpFinalA
+running symlink_data
+creating /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/install/tpFinalA/share/ament_index
+creating /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/install/tpFinalA/share/ament_index/resource_index
+creating /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/install/tpFinalA/share/ament_index/resource_index/packages
+symbolically linking /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/build/tpFinalA/resource/tpFinalA -> /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/install/tpFinalA/share/ament_index/resource_index/packages
+symbolically linking /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/build/tpFinalA/package.xml -> /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/install/tpFinalA/share/tpFinalA

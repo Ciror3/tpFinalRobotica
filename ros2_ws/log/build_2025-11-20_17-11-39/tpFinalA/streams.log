@@ -1,0 +1,25 @@
+[0.429s] Invoking command in '/home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/build/tpFinalA': PYTHONPATH=/home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/build/tpFinalA/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/install/tpFinalA/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/build/tpFinalA/build --no-deps symlink_data
+[0.617s] running develop
+[0.752s] running egg_info
+[0.752s] creating tpFinalA.egg-info
+[0.752s] writing tpFinalA.egg-info/PKG-INFO
+[0.752s] writing dependency_links to tpFinalA.egg-info/dependency_links.txt
+[0.752s] writing entry points to tpFinalA.egg-info/entry_points.txt
+[0.752s] writing requirements to tpFinalA.egg-info/requires.txt
+[0.752s] writing top-level names to tpFinalA.egg-info/top_level.txt
+[0.753s] writing manifest file 'tpFinalA.egg-info/SOURCES.txt'
+[0.753s] reading manifest file 'tpFinalA.egg-info/SOURCES.txt'
+[0.754s] writing manifest file 'tpFinalA.egg-info/SOURCES.txt'
+[0.755s] running build_ext
+[0.755s] Creating /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/install/tpFinalA/lib/python3.10/site-packages/tpFinalA.egg-link (link to .)
+[0.755s] Installing my_fastslam script to /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/install/tpFinalA/lib/tpFinalA
+[0.755s] Installing my_odometry script to /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/install/tpFinalA/lib/tpFinalA
+[0.755s] 
+[0.755s] Installed /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/build/tpFinalA
+[0.756s] running symlink_data
+[0.756s] creating /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/install/tpFinalA/share/ament_index
+[0.756s] creating /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/install/tpFinalA/share/ament_index/resource_index
+[0.756s] creating /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/install/tpFinalA/share/ament_index/resource_index/packages
+[0.756s] symbolically linking /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/build/tpFinalA/resource/tpFinalA -> /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/install/tpFinalA/share/ament_index/resource_index/packages
+[0.756s] symbolically linking /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/build/tpFinalA/package.xml -> /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/install/tpFinalA/share/tpFinalA
+[0.775s] Invoked command in '/home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/build/tpFinalA' returned '0': PYTHONPATH=/home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/build/tpFinalA/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/install/tpFinalA/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/ciror/Desktop/robotica/tps/tpFinalA/ros2_ws/build/tpFinalA/build --no-deps symlink_data

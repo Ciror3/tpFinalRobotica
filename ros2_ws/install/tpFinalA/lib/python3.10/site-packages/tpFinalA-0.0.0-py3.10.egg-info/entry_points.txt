@@ -1,0 +1,5 @@
+[console_scripts]
+my_fastslam = tpFinalA.slam:main
+my_navigation = tpFinalA.navigation:main
+my_odometry = tpFinalA.odometry:main
+
