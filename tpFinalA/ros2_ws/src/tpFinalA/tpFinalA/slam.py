@@ -8,7 +8,7 @@ import math
 from nav_msgs.msg import OccupancyGrid
 from custom_msgs.msg import DeltaOdom
 from geometry_msgs.msg import Point, PoseStamped
-import copy
+import threading
 
 def yaw_to_quaternion(yaw):
     """Convert a yaw angle (in radians) into a Quaternion message."""
@@ -18,6 +18,7 @@ def yaw_to_quaternion(yaw):
     q.y = 0.0
     q.z = math.sin(yaw * 0.5)
     return q
+
 def wrap(a): 
     return (a + np.pi) % (2*np.pi) - np.pi
 
@@ -130,7 +131,23 @@ class Particle():
             
         self.landmarks[lid] = {'mu': mu, 'sigma': sigma}
         return mu, sigma
-      
+    
+    def copy_particle(self):
+        """Copia optimizada manual para evitar la lentitud de deepcopy"""
+        p = Particle()
+        p.x = self.x
+        p.y = self.y
+        p.orientation = self.orientation
+        p.weight = self.weight
+        
+        p.landmarks = {}
+        for lid, val in self.landmarks.items():
+            p.landmarks[lid] = {
+                'mu': val['mu'].copy(),      # numpy copy es rápida
+                'sigma': val['sigma'].copy() # numpy copy es rápida
+            }
+        return p
+    
 class LineSegment:
     def __init__(self, m, n, p0, v, e1=None, e2=None):
         self.m = m      
@@ -153,7 +170,7 @@ class fastslamNode(Node):
         self.pose_pub = self.create_publisher(PoseStamped, "/fpose", 10)
         self.segments_pub = self.create_publisher(MarkerArray, "extracted_segments", 10)
 
-        self.R = np.diag([0.1, 0.05])
+        self.R = np.diag([0.05, 0.03])
         
         self.Pmin  = 18        
         self.Lmin  = 0.34      
@@ -168,81 +185,72 @@ class fastslamNode(Node):
         if num_particles != 0:
             self.particles = [Particle() for _ in range(self.num_particles)]
             self.get_logger().info(f"Se crearon {num_particles} partículas")
-        
-        self.map_pub = self.create_publisher(OccupancyGrid, "/map", 1)
 
-        # --- CONFIGURACIÓN DEL MAPA ---
-        self.map_res = 0.05       # 5 cm por celda
-        self.map_width = 800      # 800 celdas (40 metros ancho)
-        self.map_height = 800     # 800 celdas (40 metros alto)
-        self.map_origin_x = -20.0 # Origen en metros (para centrar el 0,0)
-        self.map_origin_y = -20.0
+        self.lock = threading.Lock()
+
+        self.global_segments_history = []
         
-        self.global_map = -1 * np.ones(self.map_width * self.map_height, dtype=np.int8)
-        self.current_pose = np.array([0.0, 0.0, 0.0])
-        self.map_segments = []
+        
 
     def delta_odom_callback(self,msg: DeltaOdom):
-        delta_odom = [msg.dt,msg.dr1,msg.dr2]
-        theta = self.current_pose[2]
-        
-        self.current_pose[0] += msg.dt * np.cos(theta + msg.dr1)
-        self.current_pose[1] += msg.dt * np.sin(theta + msg.dr1)
-        self.current_pose[2] += msg.dr1 + msg.dr2
-
-        self.current_pose[2] = (self.current_pose[2] + np.pi) % (2 * np.pi) - np.pi
-        self.move_particles(delta_odom)
+        with self.lock:
+            delta_odom = [msg.dt, msg.dr1, msg.dr2]
+            self.move_particles(delta_odom)
 
     def scan_callback(self, data):
-        ranges = np.array(data.ranges)
-        angle_min = data.angle_min
-        angle_inc = data.angle_increment
+        with self.lock:
+            ranges = np.array(data.ranges)
+            angle_min = data.angle_min
+            angle_inc = data.angle_increment
 
-        valid = (ranges >= data.range_min) & (ranges <= data.range_max) & (~np.isnan(ranges))
-        indices = np.where(valid)[0]
-        if len(indices) < self.Pmin:
-            return
-        
-        ranges = ranges[indices]
-        angles = angle_min + indices * angle_inc
+            valid = (ranges >= data.range_min) & (ranges <= data.range_max) & (~np.isnan(ranges))
+            indices = np.where(valid)[0]
+            if len(indices) < self.Pmin:
+                return
+            
+            ranges = ranges[indices]
+            angles = angle_min + indices * angle_inc
 
-        xs = ranges * np.cos(angles)
-        ys = ranges * np.sin(angles)
-        points = np.stack([xs, ys], axis=1)
-        segments, used_mask = self.extract_segments(points, angles)
-        self.publish_segments(data, segments)
-        landmark = []
+            xs = ranges * np.cos(angles)
+            ys = ranges * np.sin(angles)
+            points = np.stack([xs, ys], axis=1)
+            segments, used_mask = self.extract_segments(points, angles)
+            self.publish_segments(data, segments)
+            self.update_and_publish_global_map(segments)
+            landmark = []
 
-        corner_landmarks = self.segments_to_landmarks(segments)
+            corner_landmarks = self.segments_to_landmarks(segments)
 
-        point_landmarks = self.extract_point_landmarks(
-            points, 
-            used_mask, 
-            segments, 
-            cluster_thresh=0.05, 
-            min_points=3, 
-            max_points=5,
-            isolation_thresh=0.4
-        )
+            # self.publish_vector_map(segments)
 
-        if corner_landmarks.shape[0] > 0:
-            landmark.append(corner_landmarks)
-        
-        if point_landmarks.shape[0] > 0:
-            landmark.append(point_landmarks)
-        
-        if len(landmark) > 0:
-            landmarks = np.vstack(landmark)
-        else:
-            landmarks = np.empty((0, 2))
+            point_landmarks = self.extract_point_landmarks(
+                points, 
+                used_mask, 
+                segments, 
+                cluster_thresh=0.05, 
+                min_points=3, 
+                max_points=5,
+                isolation_thresh=0.4
+            )
 
-        if landmarks is not None and len(landmarks) > 0:
-            for part in self.particles:
-                for r, th in landmarks: 
-                    self.update_particles(part, r, th, thresh=6.0) 
+            if corner_landmarks.shape[0] > 0:
+                landmark.append(corner_landmarks)
+            
+            if point_landmarks.shape[0] > 0:
+                landmark.append(point_landmarks)
+            
+            if len(landmark) > 0:
+                landmarks = np.vstack(landmark)
+            else:
+                landmarks = np.empty((0, 2))
 
-        self.normalize_and_resample()
-        self.publish_fastslam()
+            if landmarks is not None and len(landmarks) > 0:
+                for part in self.particles:
+                    for r, th in landmarks: 
+                        self.update_particles(part, r, th, thresh=6.0) 
+
+            self.normalize_and_resample()
+            self.publish_fastslam()
 
     def get_distance_to_segment(self, point, seg):
         """ Calcula la distancia mínima de un punto (x,y) a un segmento finito (p1-p2) """
@@ -583,12 +591,11 @@ class fastslamNode(Node):
             w = part.update_landmarks(best_id, z, self.R)
             part.weight *= w
         else:
-            # Nuevo landmark
             part.create_landmark(r, theta, self.R)
-            part.weight *= 0.65 # Penalización pequeña por agregar complejidad
+            part.weight *= 0.65 
 
     def move_particles(self, deltas):
-        noise = [0.10, 0.05, 0.01, 0.01] 
+        noise = [0.05, 0.05, 0.02, 0.02] 
         for part in self.particles:
             part.move_odom(deltas, noise)
 
@@ -620,8 +627,8 @@ class fastslamNode(Node):
                 i += 1
             indices.append(i)
         
-        return [copy.deepcopy(self.particles[i]) for i in indices]
-
+        return [self.particles[i].copy_particle() for i in indices]
+    
     def make_landmark_marker(self, idx, x, y): 
         m = Marker() 
         m.header.frame_id = "map"
@@ -759,53 +766,8 @@ class fastslamNode(Node):
         marker_array.markers.append(wall_marker)
 
         # Publicar
-        # self.markers_pub.publish(marker_array)
+        self.markers_pub.publish(marker_array)
 
-    def rasterize_segment(self, p1, p2):
-        """
-        p1, p2: (x_mundo, y_mundo)
-        return: lista de (ix, iy) de las celdas que cruza el segmento
-        """
-        p1_idx = self.world_to_map(p1[0], p1[1])
-        p2_idx = self.world_to_map(p2[0], p2[1])
-        if p1_idx is None or p2_idx is None:
-            return []
-
-        x0, y0 = p1_idx
-        x1, y1 = p2_idx
-
-        cells = []
-
-        dx = abs(x1 - x0)
-        dy = abs(y1 - y0)
-        x, y = x0, y0
-        sx = 1 if x1 >= x0 else -1
-        sy = 1 if y1 >= y0 else -1
-
-        if dy <= dx:
-            err = dx / 2
-            while x != x1:
-                cells.append((x, y))
-                err -= dy
-                if err < 0:
-                    y += sy
-                    err += dx
-                x += sx
-            cells.append((x1, y1))
-        else:
-            err = dy / 2
-            while y != y1:
-                cells.append((x, y))
-                err -= dx
-                if err < 0:
-                    x += sx
-                    err += dy
-                y += sy
-            cells.append((x1, y1))
-
-        return cells
-
-    
     def publish_segments(self, data, segments):
         """ Visualiza los segmentos extraídos """
         msg = MarkerArray()
@@ -827,125 +789,60 @@ class fastslamNode(Node):
             msg.markers.append(m)
 
         self.segments_pub.publish(msg)
+ 
+    def update_map_with_raw_points(self, local_points):
+        if not self.particles: return
 
-        # rx, ry, rth = self.current_pose
-        # c, s = np.cos(rth), np.sin(rth)
-
-        # for seg in segments:
-        #     # Puntos originales (Locales)
-        #     lx1, ly1 = float(seg.e1[0]), float(seg.e1[1])
-        #     lx2, ly2 = float(seg.e2[0]), float(seg.e2[1])
-
-        #     # APLICAR TRANSFORMACIÓN: Rotación + Traslación
-        #     # Esto convierte "2 metros delante de mí" a "Coordenada X,Y del mundo"
-        #     gx1 = (lx1 * c - ly1 * s) + rx
-        #     gy1 = (lx1 * s + ly1 * c) + ry
-            
-        #     gx2 = (lx2 * c - ly2 * s) + rx
-        #     gy2 = (lx2 * s + ly2 * c) + ry
-
-        #     # Ahora sí, convertimos la coordenada GLOBAL a índices del mapa
-        #     ix1, iy1 = self.world_to_map(gx1, gy1)
-        #     ix2, iy2 = self.world_to_map(gx2, gy2)
-
-        #     # Dibujamos en el mapa
-        #     self.draw_line(ix1, iy1, ix2, iy2)
-
-        # self.publish_map_msg(now)
-
-    def update_map_with_segments(self, segments):
-        """
-        segments: lista de segmentos en frame del robot (seg.e1, seg.e2).
-        Usa self.current_pose como pose del robot en el mapa.
-        """
-        x_r, y_r, _ = self.current_pose
-
-        for seg in segments:
-            # 1) transformar endpoints al mundo
-            x1_w, y1_w = self.transform_point_to_world(seg.e1[0], seg.e1[1], self.current_pose)
-            x2_w, y2_w = self.transform_point_to_world(seg.e2[0], seg.e2[1], self.current_pose)
-
-            # 2) rasterizar la pared (ocupado)
-            occ_cells = self.rasterize_segment((x1_w, y1_w), (x2_w, y2_w))
-            for ix, iy in occ_cells:
-                idx = iy * self.map_width + ix
-                self.global_map[idx] = 100  # pared
-
-            # 3) opcional: marcar espacio libre desde el robot hasta cada endpoint
-            free_cells_1 = self.rasterize_segment((x_r, y_r), (x1_w, y1_w))
-            free_cells_2 = self.rasterize_segment((x_r, y_r), (x2_w, y2_w))
-            for ix, iy in free_cells_1 + free_cells_2:
-                idx = iy * self.map_width + ix
-                # Solo machaco si no es ocupado: no quiero borrar paredes
-                if self.global_map[idx] != 100:
-                    self.global_map[idx] = 0  # libre
-
-            # (Opcional) guardo el segmento ya en coords de mapa para debug
-            self.map_segments.append(((x1_w, y1_w), (x2_w, y2_w)))
-
-    def transform_point_to_world(self, px, py, pose):
-        """
-        px, py en frame del robot (base_link).
-        pose: [x_r, y_r, theta] del robot en el mapa.
-        """
-        x_r, y_r, theta = pose
-        c = np.cos(theta)
-        s = np.sin(theta)
-        x_w = x_r + c * px - s * py
-        y_w = y_r + s * px + c * py
-        return x_w, y_w
-
-    def world_to_map(self, x, y):
-        """ Convierte metros a índices de array """
-        ix = int((x - self.map_origin_x) / self.map_res)
-        iy = int((y - self.map_origin_y) / self.map_res)
-        if 0 <= ix < self.map_width and 0 <= iy < self.map_height:
-            return ix, iy
-        return None
-
-    def draw_line(self, x0, y0, x1, y1):
-        """ Algoritmo de Bresenham para dibujar líneas en el array """
-        dx = abs(x1 - x0)
-        dy = abs(y1 - y0)
-        sx = 1 if x0 < x1 else -1
-        sy = 1 if y0 < y1 else -1
-        err = dx - dy
-
-        while True:
-            # Chequeo de límites para no crashear
-            if 0 <= x0 < self.map_width and 0 <= y0 < self.map_height:
-                idx = y0 * self.map_width + x0
-                self.global_map[idx] = 100 # 100 = Ocupado
-            
-            if x0 == x1 and y0 == y1: break
-            e2 = 2 * err
-            if e2 > -dy:
-                err -= dy
-                x0 += sx
-            if e2 < dx:
-                err += dx
-                y0 += sy
-
-    def publish_map_msg(self, stamp):
-        """ Prepara y envía el mensaje ROS del mapa """
-        grid = OccupancyGrid()
-        grid.header.stamp = stamp
-        # Usamos 'map' o el frame que prefieras como referencia fija
-        grid.header.frame_id = "map" 
+        # 1. Obtener la pose de la mejor partícula
+        best_particle = max(self.particles, key=lambda p: p.weight)
+        px, py, pth = best_particle.x, best_particle.y, best_particle.orientation
         
-        grid.info.resolution = self.map_res
-        grid.info.width = self.map_width
-        grid.info.height = self.map_height
-        grid.info.origin.position.x = float(self.map_origin_x)
-        grid.info.origin.position.y = float(self.map_origin_y)
-        grid.info.origin.orientation.w = 1.0
+        # Pre-calcular seno y coseno para rotación
+        c, s = np.cos(pth), np.sin(pth)
+        rot_matrix = np.array([[c, -s], [s, c]])
+        robot_pos = np.array([px, py])
+
+        # 2. Transformación vectorizada (mucho más rápido que un bucle for en Python)
+        # Convertimos puntos locales a globales: P_global = R * P_local + T
+        global_points = (local_points @ rot_matrix.T) + robot_pos
+
+        # 3. Convertir coordenadas de mundo a índices del grid
+        # Restamos el origen y dividimos por la resolución
+        grid_x = ((global_points[:, 0] - self.map_origin_x) / self.map_res).astype(int)
+        grid_y = ((global_points[:, 1] - self.map_origin_y) / self.map_res).astype(int)
+
+        # 4. Filtrar puntos que caen fuera del mapa
+        valid_indices = (grid_x >= 0) & (grid_x < self.map_width) & \
+                        (grid_y >= 0) & (grid_y < self.map_height)
         
-        grid.data = self.global_map.tolist()
-        self.map_pub.publish(grid)
+        gx_final = grid_x[valid_indices]
+        gy_final = grid_y[valid_indices]
+
+        # 5. Marcar celdas como OCUPADAS (100)
+        # Nota: En numpy la indexación es [fila, columna] -> [y, x]
+        self.global_map_data[gy_final, gx_final] = 100
+ 
+        # --- PUBLICACIÓN DEL MAPA ---
+        self.publish_grid_map()
+
+    def publish_grid_map(self):
+        grid_msg = OccupancyGrid()
+        grid_msg.header.stamp = self.get_clock().now().to_msg()
+        grid_msg.header.frame_id = "map"
+        
+        grid_msg.info.resolution = self.map_res
+        grid_msg.info.width = self.map_width
+        grid_msg.info.height = self.map_height
+        grid_msg.info.origin.position.x = self.map_origin_x
+        grid_msg.info.origin.position.y = self.map_origin_y
+        
+        # Flatten y convertir a lista
+        grid_msg.data = self.global_map_data.flatten().tolist()
+        self.map_pub.publish(grid_msg)
 
 def main():
     rclpy.init()
-    node = fastslamNode(num_particles=50) 
+    node = fastslamNode(num_particles=70) 
     try:
         rclpy.spin(node)
     finally:
