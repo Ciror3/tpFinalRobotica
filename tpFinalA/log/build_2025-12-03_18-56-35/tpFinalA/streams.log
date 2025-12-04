@@ -1,0 +1,28 @@
+[0.503s] Invoking command in '/home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/src/tpFinalA': PYTHONPATH=/home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/build/tpFinalA/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/install/tpFinalA/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../../build/tpFinalA build --build-base /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/build/tpFinalA/build install --record /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/build/tpFinalA/install.log --single-version-externally-managed install_data
+[0.692s] running egg_info
+[0.692s] writing ../../../build/tpFinalA/tpFinalA.egg-info/PKG-INFO
+[0.692s] writing dependency_links to ../../../build/tpFinalA/tpFinalA.egg-info/dependency_links.txt
+[0.692s] writing entry points to ../../../build/tpFinalA/tpFinalA.egg-info/entry_points.txt
+[0.692s] writing requirements to ../../../build/tpFinalA/tpFinalA.egg-info/requires.txt
+[0.693s] writing top-level names to ../../../build/tpFinalA/tpFinalA.egg-info/top_level.txt
+[0.694s] reading manifest file '../../../build/tpFinalA/tpFinalA.egg-info/SOURCES.txt'
+[0.694s] adding license file 'LICENSE'
+[0.695s] writing manifest file '../../../build/tpFinalA/tpFinalA.egg-info/SOURCES.txt'
+[0.695s] running build
+[0.695s] running build_py
+[0.695s] copying tpFinalA/path_planning.py -> /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/build/tpFinalA/build/lib/tpFinalA
+[0.695s] running install
+[0.696s] running install_lib
+[0.696s] copying /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/build/tpFinalA/build/lib/tpFinalA/path_planning.py -> /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/install/tpFinalA/lib/python3.10/site-packages/tpFinalA
+[0.697s] byte-compiling /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/install/tpFinalA/lib/python3.10/site-packages/tpFinalA/path_planning.py to path_planning.cpython-310.pyc
+[0.698s] running install_data
+[0.698s] running install_egg_info
+[0.699s] removing '/home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/install/tpFinalA/lib/python3.10/site-packages/tpFinalA-0.0.0-py3.10.egg-info' (and everything under it)
+[0.699s] Copying ../../../build/tpFinalA/tpFinalA.egg-info to /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/install/tpFinalA/lib/python3.10/site-packages/tpFinalA-0.0.0-py3.10.egg-info
+[0.700s] running install_scripts
+[0.714s] Installing my_fastslam script to /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/install/tpFinalA/lib/tpFinalA
+[0.714s] Installing my_navigation script to /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/install/tpFinalA/lib/tpFinalA
+[0.714s] Installing my_odometry script to /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/install/tpFinalA/lib/tpFinalA
+[0.714s] Installing save_map script to /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/install/tpFinalA/lib/tpFinalA
+[0.714s] writing list of installed files to '/home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/build/tpFinalA/install.log'
+[0.735s] Invoked command in '/home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/src/tpFinalA' returned '0': PYTHONPATH=/home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/build/tpFinalA/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/install/tpFinalA/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../../build/tpFinalA build --build-base /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/build/tpFinalA/build install --record /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/build/tpFinalA/install.log --single-version-externally-managed install_data

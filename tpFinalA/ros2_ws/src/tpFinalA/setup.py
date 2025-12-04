@@ -1,5 +1,6 @@
 from setuptools import find_packages, setup
-
+import os
+from glob import glob
 package_name = 'tpFinalA'
 
 setup(
@@ -10,6 +11,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -22,7 +24,10 @@ setup(
         'console_scripts': [
         	"my_fastslam = tpFinalA.slam:main",
             "my_odometry = tpFinalA.odometry:main",
-            "my_navigation = tpFinalA.navigation:main"
+            "save_map = tpFinalA.save_map:main",
+            "plan_path = tpFinalA.path_planning:main",
+            "controller = tpFinalA.navigation:main",
+            'localization = tpFinalA.localization:main',
         ],
     },
 )

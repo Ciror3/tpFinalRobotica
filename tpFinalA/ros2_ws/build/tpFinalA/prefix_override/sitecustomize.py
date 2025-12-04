@@ -1,4 +1,4 @@
 import sys
 if sys.prefix == '/usr':
     sys.real_prefix = sys.prefix
-    sys.prefix = sys.exec_prefix = '/home/ciror/Desktop/robotica/tps/tpFinalA/tpFinalRobotica/ros2_ws/install/tpFinalA'
+    sys.prefix = sys.exec_prefix = '/home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/install/tpFinalA'

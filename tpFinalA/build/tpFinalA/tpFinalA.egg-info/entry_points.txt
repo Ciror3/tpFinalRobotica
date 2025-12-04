@@ -1,4 +1,8 @@
 [console_scripts]
+controller = tpFinalA.navigation:main
+localization = tpFinalA.localization:main
 my_fastslam = tpFinalA.slam:main
 my_odometry = tpFinalA.odometry:main
+plan_path = tpFinalA.path_planning:main
+save_map = tpFinalA.save_map:main
 

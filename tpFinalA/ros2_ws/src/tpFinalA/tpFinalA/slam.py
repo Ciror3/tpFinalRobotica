@@ -9,6 +9,8 @@ from nav_msgs.msg import OccupancyGrid
 from custom_msgs.msg import DeltaOdom
 from geometry_msgs.msg import Point, PoseStamped
 import threading
+from tf2_ros import TransformBroadcaster
+from geometry_msgs.msg import TransformStamped
 
 def yaw_to_quaternion(yaw):
     """Convert a yaw angle (in radians) into a Quaternion message."""
@@ -169,6 +171,7 @@ class fastslamNode(Node):
         self.markers_pub = self.create_publisher(MarkerArray, "/fastslam/markers", 10)
         self.pose_pub = self.create_publisher(PoseStamped, "/fpose", 10)
         self.segments_pub = self.create_publisher(MarkerArray, "extracted_segments", 10)
+        self.map_pub = self.create_publisher(OccupancyGrid, "/map", 10)
 
         self.R = np.diag([0.05, 0.03])
         
@@ -186,12 +189,18 @@ class fastslamNode(Node):
             self.particles = [Particle() for _ in range(self.num_particles)]
             self.get_logger().info(f"Se crearon {num_particles} partículas")
 
+        self.tf_broadcaster = TransformBroadcaster(self)
         self.lock = threading.Lock()
 
         self.global_segments_history = []
-        
-        
+        self.map_res = 0.10       # 10 cm
+        self.map_width = 100      # 20 metros total
+        self.map_height = 100     
+        self.map_origin_x = -5.0 # Centro en (0,0)
+        self.map_origin_y = -5.0
 
+        self.global_map_data = np.zeros((self.map_height, self.map_width), dtype=np.int8)
+        
     def delta_odom_callback(self,msg: DeltaOdom):
         with self.lock:
             delta_odom = [msg.dt, msg.dr1, msg.dr2]
@@ -216,7 +225,8 @@ class fastslamNode(Node):
             points = np.stack([xs, ys], axis=1)
             segments, used_mask = self.extract_segments(points, angles)
             self.publish_segments(data, segments)
-            self.update_and_publish_global_map(segments)
+            
+            self.update_map_with_raycasting(points)
             landmark = []
 
             corner_landmarks = self.segments_to_landmarks(segments)
@@ -251,6 +261,9 @@ class fastslamNode(Node):
 
             self.normalize_and_resample()
             self.publish_fastslam()
+            if self.particles:
+                best_particle = max(self.particles, key=lambda p: p.weight)
+                self.publish_tf(best_particle)
 
     def get_distance_to_segment(self, point, seg):
         """ Calcula la distancia mínima de un punto (x,y) a un segmento finito (p1-p2) """
@@ -790,40 +803,97 @@ class fastslamNode(Node):
 
         self.segments_pub.publish(msg)
  
-    def update_map_with_raw_points(self, local_points):
+    def update_map_with_raycasting(self, local_points):
+        """
+        Actualiza el mapa usando Bresenham:
+        - Resta valor (limpia) en las celdas vacías entre el robot y el punto.
+        - Suma valor (ocupa) en la celda donde golpeó el láser.
+        """
         if not self.particles: return
 
-        # 1. Obtener la pose de la mejor partícula
+        # 1. Obtener la mejor partícula
         best_particle = max(self.particles, key=lambda p: p.weight)
         px, py, pth = best_particle.x, best_particle.y, best_particle.orientation
         
-        # Pre-calcular seno y coseno para rotación
         c, s = np.cos(pth), np.sin(pth)
         rot_matrix = np.array([[c, -s], [s, c]])
         robot_pos = np.array([px, py])
 
-        # 2. Transformación vectorizada (mucho más rápido que un bucle for en Python)
-        # Convertimos puntos locales a globales: P_global = R * P_local + T
+        # Transformar nube de puntos a global
         global_points = (local_points @ rot_matrix.T) + robot_pos
 
-        # 3. Convertir coordenadas de mundo a índices del grid
-        # Restamos el origen y dividimos por la resolución
-        grid_x = ((global_points[:, 0] - self.map_origin_x) / self.map_res).astype(int)
-        grid_y = ((global_points[:, 1] - self.map_origin_y) / self.map_res).astype(int)
+        # Coordenada del robot en el grid (origen de los rayos)
+        r_gx, r_gy = self.world_to_grid(px, py)
 
-        # 4. Filtrar puntos que caen fuera del mapa
-        valid_indices = (grid_x >= 0) & (grid_x < self.map_width) & \
-                        (grid_y >= 0) & (grid_y < self.map_height)
-        
-        gx_final = grid_x[valid_indices]
-        gy_final = grid_y[valid_indices]
+        # 2. Iterar sobre los rayos (podemos saltar algunos para rendimiento, ej: [::2])
+        for p in global_points[::2]: 
+            p_gx, p_gy = self.world_to_grid(p[0], p[1])
+            
+            # Obtener línea de celdas libres
+            cells_x, cells_y = self.get_line_bresenham(r_gx, r_gy, p_gx, p_gy)
+            
+            # A. LIMPIAR ESPACIO LIBRE (Restar probabilidad)
+            for i in range(len(cells_x) - 1): # Excluir el último punto (la pared)
+                cx, cy = cells_x[i], cells_y[i]
+                if self.is_inside(cx, cy):
+                    # Restamos 5, mínimo 0
+                    curr = self.global_map_data[cy, cx]
+                    if curr > 0:
+                        self.global_map_data[cy, cx] = max(0, curr - 5)
 
-        # 5. Marcar celdas como OCUPADAS (100)
-        # Nota: En numpy la indexación es [fila, columna] -> [y, x]
-        self.global_map_data[gy_final, gx_final] = 100
- 
-        # --- PUBLICACIÓN DEL MAPA ---
+            # B. MARCAR OBSTÁCULO (Sumar probabilidad)
+            if self.is_inside(p_gx, p_gy):
+                # Sumamos 30, máximo 100
+                curr = self.global_map_data[p_gy, p_gx]
+                self.global_map_data[p_gy, p_gx] = min(100, curr + 30)
+
         self.publish_grid_map()
+
+    def publish_tf(self, particle):
+        """ Publica la transformación map -> base_link basada en la mejor partícula """
+        t = TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = "map"
+        t.child_frame_id = "base_link" # Asegúrate que tu robot usa base_link
+        
+        t.transform.translation.x = float(particle.x)
+        t.transform.translation.y = float(particle.y)
+        t.transform.translation.z = 0.0
+        t.transform.rotation = yaw_to_quaternion(float(particle.orientation))
+        
+        self.tf_broadcaster.sendTransform(t)
+
+    def world_to_grid(self, x, y):
+        ix = int((x - self.map_origin_x) / self.map_res)
+        iy = int((y - self.map_origin_y) / self.map_res)
+        return ix, iy
+
+    def is_inside(self, x, y):
+        return 0 <= x < self.map_width and 0 <= y < self.map_height
+
+    def get_line_bresenham(self, x0, y0, x1, y1):
+        """ Algoritmo para obtener celdas intermedias """
+        points_x = []
+        points_y = []
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+
+        while True:
+            points_x.append(x0)
+            points_y.append(y0)
+            if x0 == x1 and y0 == y1:
+                break
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x0 += sx
+            if e2 < dx:
+                err += dx
+                y0 += sy
+        return points_x, points_y
 
     def publish_grid_map(self):
         grid_msg = OccupancyGrid()
@@ -835,14 +905,14 @@ class fastslamNode(Node):
         grid_msg.info.height = self.map_height
         grid_msg.info.origin.position.x = self.map_origin_x
         grid_msg.info.origin.position.y = self.map_origin_y
+        grid_msg.info.origin.orientation.w = 1.0
         
-        # Flatten y convertir a lista
         grid_msg.data = self.global_map_data.flatten().tolist()
         self.map_pub.publish(grid_msg)
 
 def main():
     rclpy.init()
-    node = fastslamNode(num_particles=70) 
+    node = fastslamNode(num_particles=40) 
     try:
         rclpy.spin(node)
     finally:
