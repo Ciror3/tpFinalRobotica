@@ -15,7 +15,7 @@ class mapSaverNode(Node):
         self.marker_sub = self.create_subscription(MarkerArray, "/fastslam/markers", self.marker_callback, 10)
         
         self.latest_map_msg = None
-        self.latest_landmarks = []
+        self.latest_landmarks = {}
         self.map_received = False
         
         self.get_logger().info("Nodo Saver Iniciado. Presiona Ctrl+C para guardar y salir.")
@@ -25,23 +25,20 @@ class mapSaverNode(Node):
         self.map_received = True
 
     def marker_callback(self, msg):
-        """ Extrae las coordenadas de los landmarks de los marcadores visuales """
-        temp_landmarks = []
         for marker in msg.markers:
-            # En tu código SLAM, usas SPHERE (type 2) para el centro del landmark
-            if marker.type == 2: 
-                lm_data = {
-                    "id": marker.id,
+            if marker.type == 2: # SPHERE
+                
+                # El tipo viene directo en el namespace gracias a slam.py
+                lm_type_str = marker.ns 
+                
+                real_id = marker.id 
+                
+                self.latest_landmarks[real_id] = {
+                    "id": real_id,
                     "x": marker.pose.position.x,
                     "y": marker.pose.position.y,
-                    # Opcional: Si quisieras guardar covarianza, tendrías que suscribirte 
-                    # a los topics internos o parsear el cilindro, pero con X,Y basta para planificar.
+                    "type": lm_type_str  # Guardamos "segment" o "cluster"
                 }
-                temp_landmarks.append(lm_data)
-        
-        # Actualizamos solo si detectamos algo, para no borrar memoria si hay parpadeo
-        if temp_landmarks:
-            self.latest_landmarks = temp_landmarks
 
     def save_data(self):
         if not self.map_received:
