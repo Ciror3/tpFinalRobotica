@@ -1,82 +1,80 @@
 import rclpy
 from rclpy.node import Node
-from nav_msgs.msg import OccupancyGrid
-import numpy as np
+from visualization_msgs.msg import MarkerArray, Marker
 import json
-from visualization_msgs.msg import MarkerArray
+import os
 
-
-class mapSaverNode(Node):
+class LandmarkSaverNode(Node):
     def __init__(self):
-        super().__init__("full_saver_node")
+        super().__init__("landmark_saver_node")
         
-        # Suscripciones
-        self.map_sub = self.create_subscription(OccupancyGrid, "/map", self.map_callback, 10)
-        self.marker_sub = self.create_subscription(MarkerArray, "/fastslam/markers", self.marker_callback, 10)
+        # Suscripción solo a los marcadores
+        self.marker_sub = self.create_subscription(
+            MarkerArray, 
+            "/fastslam/markers", 
+            self.marker_callback, 
+            10
+        )
         
-        self.latest_map_msg = None
-        self.latest_landmarks = {}
-        self.map_received = False
+        self.latest_landmarks = {} # Usamos dict para evitar duplicados por ID
+        self.landmarks_received = False
         
-        self.get_logger().info("Nodo Saver Iniciado. Presiona Ctrl+C para guardar y salir.")
-
-    def map_callback(self, msg):
-        self.latest_map_msg = msg
-        self.map_received = True
+        self.get_logger().info("Landmark Saver Iniciado. Esperando datos...")
+        self.get_logger().info("Presiona Ctrl+C para guardar el JSON.")
 
     def marker_callback(self, msg):
+        """ 
+        Extrae landmarks. 
+        Asume que marker.ns contiene el tipo ('segment' o 'cluster').
+        """
+        count = 0
         for marker in msg.markers:
-            if marker.type == 2: # SPHERE
+            # Filtramos: Solo esferas (centros) y acción ADD (0)
+            if marker.type == Marker.SPHERE and marker.action == Marker.ADD:
                 
-                # El tipo viene directo en el namespace gracias a slam.py
-                lm_type_str = marker.ns 
+                # Clasificar según el namespace enviado por el SLAM
+                lm_type = marker.ns if marker.ns else "unknown"
                 
-                real_id = marker.id 
-                
-                self.latest_landmarks[real_id] = {
-                    "id": real_id,
-                    "x": marker.pose.position.x,
-                    "y": marker.pose.position.y,
-                    "type": lm_type_str  # Guardamos "segment" o "cluster"
+                lm_data = {
+                    "id": marker.id,
+                    "x": round(marker.pose.position.x, 4),
+                    "y": round(marker.pose.position.y, 4),
+                    "type": lm_type  # Aquí guardamos si es segmento o cluster
                 }
+                
+                # Guardamos en diccionario usando ID como clave para actualizar
+                self.latest_landmarks[marker.id] = lm_data
+                count += 1
+        
+        if count > 0:
+            self.landmarks_received = True
+            # Loguear solo de vez en cuando para no saturar
+            # self.get_logger().info(f"Recibidos {len(self.latest_landmarks)} landmarks únicos.")
 
     def save_data(self):
-        if not self.map_received:
-            self.get_logger().warn("No se recibió mapa. Nada que guardar.")
+        if not self.landmarks_received:
+            self.get_logger().warn("No se han recibido landmarks. Archivo vacío.")
             return
 
-        self.get_logger().info("Guardando datos...")
+        filename = "mapa_landmarks_clasificados.json"
+        self.get_logger().info(f"Guardando {len(self.latest_landmarks)} landmarks en {filename}...")
         
-        # 1. GUARDAR MAPA (Formato Matriz TXT)
-        msg = self.latest_map_msg
-        width = msg.info.width
-        height = msg.info.height
-        res = msg.info.resolution
-        origin_x = msg.info.origin.position.x
-        origin_y = msg.info.origin.position.y
-
-        # Convertir y voltear (Flip) para coordenadas correctas
-        data = np.array(msg.data, dtype=np.int8).reshape((height, width))
-        data = np.flipud(data)
+        # Convertir diccionario a lista para el JSON
+        lista_final = list(self.latest_landmarks.values())
         
-        # Guardamos datos de configuración en el header del txt para no perderlos
-        header = f"{res},{origin_x},{origin_y},{width},{height}"
-        np.savetxt("mi_mapa_grid.txt", data, fmt='%d', header=header)
-        
-        # 2. GUARDAR LANDMARKS (Formato JSON)
-        with open("mi_mapa_landmarks.json", "w") as f:
-            json.dump(self.latest_landmarks, f, indent=4)
-
-        self.get_logger().info(f"¡Éxito! Guardados: mi_mapa_grid.txt y mi_mapa_landmarks.json")
-        self.get_logger().info(f"Landmarks guardados: {len(self.latest_landmarks)}")
+        try:
+            with open(filename, "w") as f:
+                json.dump(lista_final, f, indent=4)
+            self.get_logger().info("¡Guardado exitoso!")
+        except Exception as e:
+            self.get_logger().error(f"Error guardando archivo: {e}")
 
 def main():
     rclpy.init()
-    node = mapSaverNode()
+    node = LandmarkSaverNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        # Al presionar Ctrl+C, guardamos antes de morir
         node.save_data()
     finally:
         node.destroy_node()
