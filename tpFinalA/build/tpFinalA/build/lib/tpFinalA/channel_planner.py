@@ -105,20 +105,15 @@ class ChannelPlanner(Node):
             iters += 1
             current = heapq.heappop(open_set)
             
-            # Distancia a la meta local (Heurística)
             dist_to_goal = np.hypot(current.x - goal_x, current.y - goal_y)
-
-            # Guardamos el nodo que más se acercó (aunque no llegue exacto)
             if dist_to_goal < min_heuristic:
                 min_heuristic = dist_to_goal
                 best_node = current
 
-            # Si llegamos lo suficientemente cerca, terminamos
             if dist_to_goal < 0.1:
                 best_node = current
                 break
 
-            # Podar si nos pasamos del horizonte de tiempo
             if current.g > self.horizon:
                 continue
 

@@ -8,11 +8,6 @@ from tf2_ros import TransformBroadcaster
 from custom_msgs.msg import DeltaOdom 
 import math
 from numba import njit
-import copy
-
-# =================================================================================
-# 1. FUNCIONES OPTIMIZADAS CON NUMBA (Matemática Pura)
-# =================================================================================
 
 @njit(fastmath=True)
 def fast_mahalanobis_sq(px, py, ptheta, lm_mu, lm_sigma, z_r, z_theta, R):
@@ -75,9 +70,6 @@ def fast_mahalanobis_sq(px, py, ptheta, lm_mu, lm_sigma, z_r, z_theta, R):
     
     return d2
 
-# =================================================================================
-# 2. UTILIDADES DE GEOMETRÍA
-# =================================================================================
 
 def yaw_to_quaternion(yaw):
     q = Quaternion()
@@ -90,10 +82,6 @@ def wrap(a):
 class LineSegment:
     def __init__(self, m, n, p0, v, e1=None, e2=None):
         self.m = m; self.n = n; self.p0 = p0; self.v = v; self.e1 = e1; self.e2 = e2
-
-# =================================================================================
-# 3. CLASE PARTICLE (Con soporte de tipos y Numba helper)
-# =================================================================================
 
 class Particle():
     def __init__(self):
@@ -185,10 +173,6 @@ class Particle():
                 'type': val.get('type', 'unknown')
             }
         return p
-
-# =================================================================================
-# 4. NODO PRINCIPAL (Feature-Based SLAM)
-# =================================================================================
 
 class fastslamNode(Node):
     def __init__(self, num_particles=100):
@@ -299,7 +283,6 @@ class fastslamNode(Node):
             part.create_landmark(r, theta, self.R, lm_type=lm_type)
             part.weight *= 0.5 
 
-    # --- FUNCIONES DE EXTRACCIÓN (Segmentos y Clusters) ---
     def get_distance_to_segment(self, point, seg):
         p, a, b = point, seg.e1, seg.e2
         ab, ap = b - a, p - a
@@ -363,13 +346,16 @@ class fastslamNode(Node):
         return None
     
     def point_to_line_distance(self, p, p0, v): return abs((p-p0)[0]*v[1] - (p-p0)[1]*v[0])
+    
     def predict_point_from_bearing(self, p0, v, theta):
         denom = v[0]*np.sin(theta) - v[1]*np.cos(theta)
         return p0 + ((p0[1]*np.cos(theta) - p0[0]*np.sin(theta))/denom) * v if denom != 0 else p0
+    
     def fit_seed(self, points, i, j):
         pts = points[i:j+1]; p0 = np.mean(pts,axis=0)
         _,_,vt = np.linalg.svd(pts - p0); v = vt[0] / np.linalg.norm(vt[0])
         return p0,v
+    
     def grow_region(self, points, i, j, eps, Pmin, Lmin):
         Np = len(points); Pb, Pf = i, j; p0, v = self.fit_seed(points, Pb, Pf)
         k = Pf + 1
@@ -378,6 +364,7 @@ class fastslamNode(Node):
         while k >= 0 and self.point_to_line_distance(points[k],p0,v) < eps: Pb = k; p0,v = self.fit_seed(points,Pb,Pf); k-=1
         if (np.linalg.norm(points[Pf] - points[Pb]) >= Lmin) and (Pf - Pb + 1 >= Pmin): return {"Pb": Pb, "Pf": Pf, "p0": p0, "v": v}
         return None
+    
     def process_overlaps(self, points, segments):
         if len(segments) <= 1: return segments
         for i in range(len(segments)-1):
@@ -485,7 +472,7 @@ class fastslamNode(Node):
         self.tf_broadcaster.sendTransform(t)
 
 def main():
-    rclpy.init(); node = fastslamNode(num_particles=40) 
+    rclpy.init(); node = fastslamNode(num_particles=200) 
     try: rclpy.spin(node)
     finally: node.destroy_node(); rclpy.shutdown()
 

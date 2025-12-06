@@ -1,92 +1,228 @@
-import numpy as np
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Point
 from nav_msgs.msg import Path, OccupancyGrid
+import numpy as np
 import heapq
 import json
 import os
+import math
+import cv2 
 
 class PathPlannerNode(Node):
 
     def __init__(self):
         super().__init__("path_planner")
 
-        # --- 1. CONFIGURACIÓN DEL MAPA ---
-        # Ruta absoluta o relativa al archivo
-        self.map_path = '/home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/src/tpFinalA/mapas/mi_mapa_grid_test.txt'
+        # --- 1. CONFIGURACIÓN DEL MAPA (Basado en tu YAML) ---
+        # Ajusta la ruta a tu carpeta
+        self.base_path = '/home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/src/tpFinalA/mapas'
+        self.map_pgm_path = self.base_path + '/mapa_final.pgm'
+        self.landmarks_json_path = self.base_path + '/mapa_landmarks_clasificados.json'
         
-        try:
-            self.occ_map = np.loadtxt(self.map_path)
-            # NOTA: Si el mapa se ve "patas arriba" en RViz, comenta o descomenta la siguiente linea:
-            self.occ_map = np.flipud(self.occ_map) 
-            self.get_logger().info(f"Mapa cargado: {self.occ_map.shape}")
-        except Exception as e:
-            self.get_logger().error(f"Error cargando mapa TXT: {e}")
-            self.occ_map = np.zeros((100, 100))
-
+        # PARÁMETROS DEL YAML (Copiados de tu input)
+        self.map_res = 0.05        # 5 cm por pixel
+        self.map_origin_x = -10.0  # Metros
+        self.map_origin_y = -10.0  # Metros
+        
+        # Cargar mapa PGM
+        self.occ_map = self.load_pgm_map(self.map_pgm_path)
         self.rows, self.cols = self.occ_map.shape
+        self.map_width = self.cols
+        self.map_height = self.rows
 
-        # Parámetros ajustados para mapa de 5x5 metros (100 celdas)
-        self.map_res = 0.10        
-        self.map_origin_x = -5.0  
-        self.map_origin_y = -5.0
-        self.map_width = 100      # Coincide con tu archivo txt
-        self.map_height = 100
+        # --- 2. FUSIONAR LANDMARKS ---
+        self.load_and_inflate_landmarks(self.landmarks_json_path)
 
-        # --- 2. CARGAR Y FUSIONAR LANDMARKS ---
-        # Asumimos que el json se llama igual pero con terminación _landmarks.json
-        # o puedes poner la ruta directa abajo.
-        json_path = self.map_path.replace('_grid_test.txt', '_landmarks.json')
-        # json_path = '/home/ciror/.../mi_mapa_landmarks.json' # Ruta manual si falla la automatica
-        
-        self.load_and_inflate_landmarks(json_path)
-
+        # Suscriptores y Publicadores
         self.goal_sub = self.create_subscription(PoseStamped, "/goal_pose", self.goal_callback, 10)
-        self.pose_sub = self.create_subscription(PoseStamped, "/locpose", self.pose_callback, 10)
-        self.path_pub = self.create_publisher(Path, "/planned_path", 10)
+        self.pose_sub = self.create_subscription(PoseStamped, "/amcl_pose", self.pose_callback, 10)
         
-        # Publisher para ver el mapa con landmarks en RViz
+        self.path_pub = self.create_publisher(Path, "/planned_path", 10)
         self.map_vis_pub = self.create_publisher(OccupancyGrid, "/planning_map", 10)
-        self.create_timer(2.0, self.publish_visual_map) # Publicar mapa cada 2s
+        
+        # Timer visualización
+        self.create_timer(1.0, self.publish_visual_map)
 
         self.current_pose = None
-        self.get_logger().info("Path Planner con Landmarks listo.")
+        self.get_logger().info(f"Path Planner Listo. Mapa: {self.cols}x{self.rows} px, Res: {self.map_res}")
+
+    def load_pgm_map(self, filepath):
+        """ Carga la imagen PGM y la convierte a matriz de costos 0-100 """
+        if not os.path.exists(filepath):
+            self.get_logger().error(f"¡No se encuentra el mapa PGM!: {filepath}")
+            # Retornar mapa vacío de seguridad (20x20m / 0.05 = 400px)
+            return np.zeros((400, 400), dtype=int)
+
+        try:
+            # Leer imagen en escala de grises
+            # OpenCV carga [fila, col] -> [y, x]
+            img = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
+            
+            if img is None:
+                raise ValueError("cv2.imread devolvió None. Formato inválido.")
+
+            # --- CONVERSIÓN DE VALORES ---
+            # En PGM generado por GridMapper:
+            # 0 (Negro) = Ocupado -> Costo 100
+            # 254 (Blanco) = Libre -> Costo 0
+            # 205 (Gris) = Desconocido -> Costo 100 (evitar zonas desconocidas) o 50
+            
+            grid = np.zeros_like(img, dtype=int)
+            
+            # Umbralización para A*
+            # Tratamos como obstáculo (100) todo lo que no sea espacio libre seguro
+            grid[img < 250] = 100  # Paredes y desconocidos son obstáculos
+            grid[img >= 250] = 0   # Espacio libre (blanco) es caminable
+            
+            # IMPORTANTE: GridMapper guardó la imagen con np.flipud.
+            # OpenCV la lee "tal cual".
+            # RViz pone el origen (0,0) abajo-izquierda.
+            # Las matrices numpy tienen el (0,0) arriba-izquierda.
+            # Para alinear coordenadas, necesitamos invertir el eje Y.
+            grid = np.flipud(grid)
+
+            self.get_logger().info("Mapa PGM cargado y procesado.")
+            return grid
+
+        except Exception as e:
+            self.get_logger().error(f"Error cargando PGM: {e}")
+            return np.zeros((400, 400), dtype=int)
 
     def load_and_inflate_landmarks(self, filepath):
-        """ Lee el JSON y marca los landmarks como obstáculos (100) en el mapa """
+        """ Lee JSON e inyecta obstáculos (Landmarks) en el mapa """
         if not os.path.exists(filepath):
-            self.get_logger().warn(f"NO se encontró archivo de landmarks en: {filepath}")
             return
 
         try:
             with open(filepath, 'r') as f:
                 landmarks = json.load(f)
             
-            self.get_logger().info(f"Cargando {len(landmarks)} landmarks...")
-            
-            # Radio de seguridad (en celdas). 3 celdas * 5cm = 15cm de radio
-            radius = 3 
+            # Radio de seguridad (Inflation)
+            # 0.20m / 0.05 res = 4 pixeles de radio
+            radius_px = 4
             
             for lm in landmarks:
                 lx, ly = lm['x'], lm['y']
                 gy, gx = self.world_to_grid(lx, ly)
                 
-                # Dibujar un cuadrado alrededor del landmark
-                for dy in range(-radius, radius + 1):
-                    for dx in range(-radius, radius + 1):
+                # Dibujar cuadrado solido
+                for dy in range(-radius_px, radius_px + 1):
+                    for dx in range(-radius_px, radius_px + 1):
                         ny, nx = gy + dy, gx + dx
-                        # Verificar limites
                         if 0 <= ny < self.rows and 0 <= nx < self.cols:
-                            self.occ_map[ny, nx] = 100 # OBSTÁCULO SOLIDO
+                            self.occ_map[ny, nx] = 100 
                             
-            self.get_logger().info("Landmarks inyectados en el mapa de costos.")
-            
+            self.get_logger().info(f"Landmarks inyectados ({len(landmarks)}).")
         except Exception as e:
-            self.get_logger().error(f"Error parseando JSON: {e}")
+            self.get_logger().error(f"Error JSON: {e}")
+
+    def pose_callback(self, msg):
+        self.current_pose = msg
+
+    def goal_callback(self, msg):
+        if self.current_pose is None:
+            self.get_logger().warn("Esperando pose del robot...")
+            return
+        
+        start_world = (self.current_pose.pose.position.x, self.current_pose.pose.position.y)
+        goal_world = (msg.pose.position.x, msg.pose.position.y)
+        
+        start_grid = self.world_to_grid(*start_world)
+        goal_grid = self.world_to_grid(*goal_world)
+        
+        # Chequeo rápido de límites
+        if not (0 <= start_grid[0] < self.rows and 0 <= start_grid[1] < self.cols):
+            self.get_logger().warn("El robot está FUERA del mapa.")
+            return
+
+        self.get_logger().info(f"Planificando: {start_grid} -> {goal_grid}")
+        path_grid = self.astar(start_grid, goal_grid)
+        
+        if path_grid is not None:
+            self.publish_path(path_grid)
+        else:
+            self.get_logger().warn("No se encontró camino.")
+
+    # --- UTILIDADES DE COORDENADAS ---
+    def world_to_grid(self, x, y):
+        gx = int((x - self.map_origin_x) / self.map_res)
+        gy = int((y - self.map_origin_y) / self.map_res)
+        gx = max(0, min(self.cols - 1, gx))
+        gy = max(0, min(self.rows - 1, gy))
+        return (gy, gx) # (row, col)
+
+    def grid_to_world(self, gy, gx):
+        wx = (gx * self.map_res) + self.map_origin_x
+        wy = (gy * self.map_res) + self.map_origin_y
+        return wx, wy
+
+    # --- A* (Misma lógica, ajustada a numpy int) ---
+    def astar(self, start, goal):
+        # Si la meta es obstáculo, buscar vecino libre más cercano
+        if self.occ_map[goal] >= 50:
+            self.get_logger().warn("Meta en obstáculo.")
+            return None
+
+        open_set = []
+        heapq.heappush(open_set, (0, start))
+        came_from = {}
+        g_score = {start: 0}
+        f_score = {start: self.heuristic(start, goal)}
+        
+        while open_set:
+            _, current = heapq.heappop(open_set)
+
+            if current == goal:
+                return self.reconstruct_path(came_from, current)
+
+            for neighbor, cost in self.get_neighbors(current):
+                tentative_g = g_score[current] + cost
+                if neighbor not in g_score or tentative_g < g_score[neighbor]:
+                    came_from[neighbor] = current
+                    g_score[neighbor] = tentative_g
+                    f = tentative_g + self.heuristic(neighbor, goal)
+                    f_score[neighbor] = f
+                    heapq.heappush(open_set, (f, neighbor))
+        return None
+
+    def get_neighbors(self, node):
+        y, x = node
+        neighbors = []
+        moves = [(0,1,1), (0,-1,1), (1,0,1), (-1,0,1), (1,1,1.41), (1,-1,1.41), (-1,1,1.41), (-1,-1,1.41)]
+        
+        for dy, dx, cost in moves:
+            ny, nx = y + dy, x + dx
+            if 0 <= ny < self.rows and 0 <= nx < self.cols:
+                # Transitable si valor < 50
+                if self.occ_map[ny, nx] < 50:
+                    neighbors.append(((ny, nx), cost))
+        return neighbors
+
+    def heuristic(self, a, b):
+        return math.sqrt((b[0]-a[0])**2 + (b[1]-a[1])**2)
+
+    def reconstruct_path(self, came_from, current):
+        path = [current]
+        while current in came_from:
+            current = came_from[current]
+            path.append(current)
+        path.reverse()
+        return path
+
+    def publish_path(self, grid_path):
+        msg = Path()
+        msg.header.frame_id = "map"
+        msg.header.stamp = self.get_clock().now().to_msg()
+        for (gy, gx) in grid_path:
+            wx, wy = self.grid_to_world(gy, gx)
+            pose = PoseStamped()
+            pose.pose.position.x = float(wx)
+            pose.pose.position.y = float(wy)
+            msg.poses.append(pose)
+        self.path_pub.publish(msg)
 
     def publish_visual_map(self):
-        """ Publica el mapa interno para ver en RViz dónde cree el robot que están los obstáculos """
         msg = OccupancyGrid()
         msg.header.frame_id = "map"
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -95,132 +231,16 @@ class PathPlannerNode(Node):
         msg.info.height = self.rows
         msg.info.origin.position.x = float(self.map_origin_x)
         msg.info.origin.position.y = float(self.map_origin_y)
-        msg.info.origin.orientation.w = 1.0
         
-        # Convertir a lista int plana
-        data = self.occ_map.flatten().astype(int).tolist()
-        msg.data = data
+        # Aplanar y enviar (-1 para desconocido no se usa aqui, todo es 0 o 100)
+        data = self.occ_map.flatten().astype(np.int8)
+        msg.data = data.tolist()
         self.map_vis_pub.publish(msg)
-
-
-    def pose_callback(self, msg):
-        self.current_pose = msg
-
-    def world_to_grid(self, x_world, y_world):
-        ix = int((x_world - self.map_origin_x) / self.map_res)
-        iy = int((y_world - self.map_origin_y) / self.map_res)
-        ix = max(0, min(self.cols - 1, ix))
-        iy = max(0, min(self.rows - 1, iy))
-        return np.array([iy, ix]) 
-
-    def grid_to_world(self, iy, ix):
-        x_world = ix * self.map_res + self.map_origin_x
-        y_world = iy * self.map_res + self.map_origin_y
-        return x_world, y_world
-
-    def get_neighborhood(self, node):
-        y, x = node
-        neighbors = []
-        # (dy, dx, costo)
-        directions = [
-            (0, 1, 1), (0, -1, 1), (1, 0, 1), (-1, 0, 1), 
-            (1, 1, 1.414), (1, -1, 1.414), (-1, 1, 1.414), (-1, -1, 1.414)
-        ]
-        for dy, dx, cost in directions:
-            ny, nx = y + dy, x + dx
-            if 0 <= ny < self.rows and 0 <= nx < self.cols:
-                # Consideramos transitable si el valor < 50
-                if self.occ_map[ny, nx] < 50: 
-                    neighbors.append(((ny, nx), cost))
-        return neighbors
-
-    def heuristic(self, a, b):
-        return np.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2)
-
-    def plan_path(self, start, goal):
-        if np.array_equal(start, goal): return None
-        if self.occ_map[tuple(goal)] >= 50:
-            self.get_logger().warn("¡Meta inválida! Cae en obstáculo/landmark.")
-            return None
-
-        open_set = []
-        heapq.heappush(open_set, (0, tuple(start)))
-        
-        came_from = {}
-        g_score = {tuple(start): 0}
-        
-        path_found = False
-        goal_tuple = tuple(goal)
-        
-        while open_set:
-            current_f, current = heapq.heappop(open_set)
-
-            if current == goal_tuple:
-                path_found = True
-                break
-
-            for neighbor, move_cost in self.get_neighborhood(current):
-                tentative_g = g_score[current] + move_cost
-                
-                # Penalización extra si está cerca de obstáculo (opcional)
-                cell_val = self.occ_map[neighbor]
-                penalty = (cell_val / 10.0) # Pequeña penalización por terreno 'sucio'
-                
-                if neighbor not in g_score or (tentative_g + penalty) < g_score[neighbor]:
-                    came_from[neighbor] = current
-                    g_score[neighbor] = tentative_g + penalty
-                    f = g_score[neighbor] + self.heuristic(neighbor, goal)
-                    heapq.heappush(open_set, (f, neighbor))
-
-        if not path_found:
-            return None
-
-        # Reconstruir
-        path = []
-        curr = goal_tuple
-        while curr in came_from:
-            path.append(curr)
-            curr = came_from[curr]
-        path.append(tuple(start))
-        path.reverse()
-        return np.array(path)
-    
-    def goal_callback(self, msg):
-        if self.current_pose is None:
-            self.get_logger().warn("Esperando pose del robot...")
-            return
-        
-        goal = self.world_to_grid(msg.pose.position.x, msg.pose.position.y)
-        start = self.world_to_grid(self.current_pose.pose.position.x, self.current_pose.pose.position.y)
-        
-        self.get_logger().info(f"Planificando ruta...")
-        path = self.plan_path(start, goal)
-        
-        if path is not None:
-            self.publish_path(path)
-        else:
-            self.get_logger().warn("No se encontró camino.")
-
-    def publish_path(self, path):
-        path_msg = Path()
-        path_msg.header.frame_id = "map"
-        path_msg.header.stamp = self.get_clock().now().to_msg()
-
-        for cell in path:
-            x, y = self.grid_to_world(int(cell[0]), int(cell[1]))
-            pose = PoseStamped()
-            pose.header.frame_id = "map"
-            pose.pose.position.x, pose.pose.position.y = float(x), float(y)
-            path_msg.poses.append(pose)
-
-        self.path_pub.publish(path_msg)
-        self.get_logger().info(f"Ruta publicada ({len(path)} puntos).")
 
 def main():
     rclpy.init()
     node = PathPlannerNode()
     try: rclpy.spin(node)
-    except KeyboardInterrupt: pass
     finally: node.destroy_node(); rclpy.shutdown()
 
-if __name__ == "__main__": main()
+if __name__ == '__main__': main()

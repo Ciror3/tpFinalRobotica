@@ -1,41 +1,39 @@
-import numpy as np
+import numpy as np    
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Quaternion, Point, PoseStamped, TransformStamped
 from visualization_msgs.msg import Marker, MarkerArray
 from sensor_msgs.msg import LaserScan
-from nav_msgs.msg import OccupancyGrid
-from custom_msgs.msg import DeltaOdom
 from tf2_ros import TransformBroadcaster
+from custom_msgs.msg import DeltaOdom 
 import math
 import json
 import os
-import threading
+import copy
 
-# --- UTILIDADES ---
+# --- FUNCIONES MATEMÁTICAS ---
 def yaw_to_quaternion(yaw):
     q = Quaternion()
-    q.w = math.cos(yaw * 0.5)
-    q.x = 0.0
-    q.y = 0.0
-    q.z = math.sin(yaw * 0.5)
+    q.w = math.cos(yaw * 0.5); q.x = 0.0; q.y = 0.0; q.z = math.sin(yaw * 0.5)
     return q
 
 def wrap(a): 
     return (a + np.pi) % (2*np.pi) - np.pi
 
+# --- CLASE SEGMENTO ---
 class LineSegment:
     def __init__(self, m, n, p0, v, e1=None, e2=None):
-        self.m, self.n = m, n
-        self.p0, self.v = p0, v
-        self.e1, self.e2 = e1, e2
+        self.m = m; self.n = n; self.p0 = p0; self.v = v; self.e1 = e1; self.e2 = e2
 
+# --- CLASE PARTÍCULA (MODO LOCALIZACIÓN) ---
 class Particle():
-    def __init__(self, x=0, y=0, theta=0, weight=1.0):
-        self.x = x
-        self.y = y
-        self.orientation = theta
-        self.weight = weight
+    def __init__(self, static_map_ref=None):
+        self.x = 0.0
+        self.y = 0.0
+        self.orientation = 0.0
+        self.weight = 1.0
+        
+        self.landmarks = static_map_ref if static_map_ref else {}
 
     def set(self, new_x, new_y, new_orientation):
         self.x = float(new_x)
@@ -43,423 +41,365 @@ class Particle():
         self.orientation = float(new_orientation)
 
     def move_odom(self, odom, alpha):
-        """ Modelo de movimiento odometrico """
-        dist  = odom[0]       
-        delta_rot1  = odom[1]
-        delta_rot2 = odom[2]
-
-        # Ruido dependiente del movimiento
-        varDeltaRot1 = alpha[0]*np.abs(delta_rot1) + alpha[1]*dist
-        varDeltaRot2 = alpha[0]*np.abs(delta_rot2) + alpha[1]*dist
-        varDeltaTrans = alpha[3]*(np.abs(delta_rot1)+np.abs(delta_rot2)) + alpha[2]*dist
-
-        deltaRot1 = delta_rot1 + np.random.normal(0, np.sqrt(varDeltaRot1 + 1e-9))
-        deltaRot2 = delta_rot2 + np.random.normal(0, np.sqrt(varDeltaRot2 + 1e-9))
-        deltaRotT = dist + np.random.normal(0, np.sqrt(varDeltaTrans + 1e-9))
-
-        self.x += deltaRotT * np.cos(self.orientation + deltaRot1)
-        self.y += deltaRotT * np.sin(self.orientation + deltaRot1)
-        self.orientation = wrap(self.orientation + deltaRot1 + deltaRot2)
-
-    def calculate_weight(self, observed_landmarks, map_landmarks, R_cov):
-        """
-        Compara los landmarks observados (lista de [r, theta]) 
-        con el mapa conocido (diccionario) para actualizar el peso.
-        """
-        total_prob = 1.0
+        dist, dr1, dr2 = odom
+        varRot1 = alpha[0]*abs(dr1) + alpha[1]*dist
+        varRot2 = alpha[0]*abs(dr2) + alpha[1]*dist
+        varTrans = alpha[3]*(abs(dr1)+abs(dr2)) + alpha[2]*dist
         
-        # Si no vemos nada, el peso se mantiene (o decae ligeramente)
-        if len(observed_landmarks) == 0:
-            return 1.0
-
-        # Para cada observación, buscamos el landmark del mapa más cercano (Data Association)
-        # Nota: En localización pura, asumimos que la posición de los landmarks del mapa es exacta.
+        dr1_hat = dr1 + np.random.normal(0, np.sqrt(varRot1))
+        dr2_hat = dr2 + np.random.normal(0, np.sqrt(varRot2))
+        dt_hat  = dist + np.random.normal(0, np.sqrt(varTrans))
         
-        inv_R = np.linalg.inv(R_cov)
-        det_R = np.linalg.det(R_cov)
-        norm_const = 1.0 / (2.0 * np.pi * math.sqrt(det_R))
+        self.x += dt_hat * np.cos(self.orientation + dr1_hat)
+        self.y += dt_hat * np.sin(self.orientation + dr1_hat)
+        self.orientation += dr1_hat + dr2_hat
 
-        for obs in observed_landmarks:
-            r_obs, th_obs = obs
+    def get_likelihood(self, z, landmark_mu, landmark_sigma, R):
+        dx = landmark_mu[0] - self.x
+        dy = landmark_mu[1] - self.y
+        q = max(dx*dx + dy*dy, 1e-12)
+        r_pred = math.sqrt(q)
+        
+        angle_pred = wrap(math.atan2(dy, dx) - self.orientation)
+        zhat = np.array([r_pred, angle_pred])
+        
+        H = np.array([[ dx/r_pred, dy/r_pred ], 
+                      [-dy/q,      dx/q      ]], dtype=float)
+        
+        nu = z - zhat
+        nu[1] = wrap(nu[1])
+        
+        Q = H @ landmark_sigma @ H.T + R
+        
+        try:
+            det_Q = np.linalg.det(Q)
+            if det_Q <= 1e-15: return 1e-12
             
-            # Convertir observación local a coordenada global aproximada
-            # basada en la posición actual de la partícula
-            a_global = self.orientation + th_obs
-            lx_obs = self.x + r_obs * np.cos(a_global)
-            ly_obs = self.y + r_obs * np.sin(a_global)
+            inv_Q = np.linalg.inv(Q)
+            exponent = -0.5 * (nu.T @ inv_Q @ nu)
+            coeff = 1.0 / (2.0 * np.pi * math.sqrt(det_Q))
+            return float(coeff * np.exp(exponent))
+        except np.linalg.LinAlgError:
+            return 1e-12
 
-            # Buscar vecino más cercano en el mapa (Nearest Neighbor)
-            best_dist = float('inf')
-            best_nu = None
-
-            for lid, lm in map_landmarks.items():
-                mx, my = lm['x'], lm['y']
-                dist = (lx_obs - mx)**2 + (ly_obs - my)**2
-                
-                if dist < best_dist:
-                    best_dist = dist
-                    # Calculamos el error en el espacio de medida (r, theta)
-                    # Predicción esperada si la partícula estuviera correcta:
-                    dx = mx - self.x
-                    dy = my - self.y
-                    q = dx*dx + dy*dy
-                    r_pred = math.sqrt(q)
-                    th_pred = wrap(math.atan2(dy, dx) - self.orientation)
-                    
-                    nu = np.array([r_obs - r_pred, wrap(th_obs - th_pred)])
-                    best_nu = nu
-
-            # Umbral de asociación: Si el landmark está muy lejos (ej. > 1 metro), es "ruido" o un obstáculo nuevo
-            if best_dist < 1.0 and best_nu is not None:
-                # Gaussiana multivariada
-                exponent = -0.5 * (best_nu.T @ inv_R @ best_nu)
-                prob = norm_const * np.exp(exponent)
-                total_prob *= prob
-            else:
-                # Penalización suave por característica no explicada
-                total_prob *= 0.8
-
-        return total_prob
-
-    def copy(self):
-        return Particle(self.x, self.y, self.orientation, self.weight)
+    def copy_particle(self):
+        p = Particle(self.landmarks) 
+        p.x = self.x
+        p.y = self.y
+        p.orientation = self.orientation
+        p.weight = self.weight
+        return p
 
 class LocalizationNode(Node):
     def __init__(self):
         super().__init__("localization_node")
-
-        # --- CONFIGURACIÓN ---
-        # RUTA AL MAPA JSON (AJUSTAR ESTA RUTA)
-        self.landmarks_file = '/home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/src/tpFinalA/mapas/mi_mapa_landmarks.json'
         
-        self.num_particles = 200 # Más partículas ayudan a recuperar la posición al inicio
-        self.R = np.diag([0.05, 0.03]) # Ruido de medida (r, theta)
-        self.noise_odom = [0.02, 0.02, 0.01, 0.01] # Ruido movimiento
+        self.known_landmarks = self.load_map("/home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/src/tpFinalA/mapas/mapa_landmarks_clasificados.json")
+        if not self.known_landmarks:
+            self.get_logger().error("¡ERROR CRÍTICO: No se encontró el mapa json!")
+        else:
+            self.get_logger().info(f"Mapa cargado correctamente: {len(self.known_landmarks)} landmarks.")
 
-        # Subscripciones y Publicadores
+        # 2. Configuración
+        self.num_particles = 300 
+        self.particles = [Particle(self.known_landmarks) for _ in range(self.num_particles)]
+        
+        for p in self.particles:
+            p.x = np.random.normal(0, 0.1)
+            p.y = np.random.normal(0, 0.1)
+            p.orientation = np.random.normal(0, 0.05)
+
+        self.R = np.diag([0.1, 0.05])
+
         self.delta_sub = self.create_subscription(DeltaOdom, "/delta", self.delta_odom_callback, 10)
         self.scan_sub = self.create_subscription(LaserScan, "/scan", self.scan_callback, 10)
         
-        self.pose_pub = self.create_publisher(PoseStamped, "/fpose", 10)
-        self.markers_pub = self.create_publisher(MarkerArray, "/localization/particles", 10)
-        self.map_vis_pub = self.create_publisher(MarkerArray, "/localization/map_landmarks", 10) # Visualizar el mapa cargado
-        self.segments_pub = self.create_publisher(MarkerArray, "extracted_segments", 10)
-
-        self.tf_broadcaster = TransformBroadcaster(self)
-        self.lock = threading.Lock()
-
-        # Cargar Mapa
-        self.map_landmarks = self.load_landmarks()
+        self.pose_pub = self.create_publisher(PoseStamped, "/amcl_pose", 10)
+        self.markers_pub = self.create_publisher(MarkerArray, "/localization/markers", 10)
         
-        # Inicializar Partículas
-        # Asumimos inicio en (0,0) o cerca. Si quieres "Secuestro", aumenta el ruido inicial.
-        self.particles = [Particle(0 + np.random.normal(0,0.1), 
-                                   0 + np.random.normal(0,0.1), 
-                                   0 + np.random.normal(0,0.1)) 
-                          for _ in range(self.num_particles)]
+        self.segments_pub = self.create_publisher(MarkerArray, "/extracted_segments", 10)
+        
+        self.tf_broadcaster = TransformBroadcaster(self)
 
-        # Parámetros Extracción Características (Idéntico a SLAM)
         self.Pmin = 18; self.Lmin = 0.34; self.eps = 0.03; self.Snum = 8; self.delta = 0.1
         self.corner_thresh = 0.5; self.angle_thresh = np.deg2rad(30)
 
-        # Publicar el mapa estático una vez al principio para verlo en RViz
-        self.publish_static_map()
-        self.get_logger().info(f"Localización Iniciada con {len(self.map_landmarks)} landmarks conocidos.")
-
-    def load_landmarks(self):
-        if not os.path.exists(self.landmarks_file):
-            self.get_logger().error(f"NO SE ENCONTRÓ EL MAPA EN: {self.landmarks_file}")
-            return {}
-        
-        try:
-            with open(self.landmarks_file, 'r') as f:
-                data = json.load(f)
-            
-            landmarks = {}
-            # Manejar formato lista o dict
-            iterable = data.values() if isinstance(data, dict) else data
-            for item in iterable:
-                lid = item.get('id', len(landmarks))
-                # Soporte para claves 'mu' o 'x'/'y'
-                if 'mu' in item:
-                    x, y = item['mu'][0], item['mu'][1]
-                else:
-                    x, y = item['x'], item['y']
-                landmarks[lid] = {'x': x, 'y': y}
-            return landmarks
-        except Exception as e:
-            self.get_logger().error(f"Error parseando JSON: {e}")
-            return {}
+    def load_map(self, filename):
+        if not os.path.exists(filename): return {}
+        with open(filename, 'r') as f:
+            data = json.load(f)
+        landmarks = {}
+        for item in data:
+            lid = item['id']
+            mu = np.array([item['x'], item['y']])
+            sigma = np.eye(2) * 0.005 
+            lm_type = item.get('type', 'unknown')
+            landmarks[lid] = {'mu': mu, 'sigma': sigma, 'type': lm_type}
+        return landmarks
 
     def delta_odom_callback(self, msg: DeltaOdom):
-        with self.lock:
-            d = [msg.dt, msg.dr1, msg.dr2]
-            for p in self.particles:
-                p.move_odom(d, self.noise_odom)
+        noise = [0.05, 0.05, 0.05, 0.05] 
+        delta_odom = [msg.dt, msg.dr1, msg.dr2]
+        if abs(msg.dt) > 0.001 or abs(msg.dr1) > 0.001:
+           pass # self.get_logger().info(f"Moviendo: {msg.dt:.3f}, {msg.dr1:.3f}")
+        for p in self.particles:
+            p.move_odom(delta_odom, noise)
+        self.publish_results()
 
     def scan_callback(self, data):
-        with self.lock:
-            # 1. Extracción de Características (Landmarks Observados)
-            ranges = np.array(data.ranges)
-            angle_min = data.angle_min
-            angle_inc = data.angle_increment
-            valid = (ranges >= data.range_min) & (ranges <= data.range_max) & (~np.isnan(ranges))
-            indices = np.where(valid)[0]
-            if len(indices) < self.Pmin: return
-            
-            ranges = ranges[indices]
-            angles = angle_min + indices * angle_inc
-            xs = ranges * np.cos(angles)
-            ys = ranges * np.sin(angles)
-            points = np.stack([xs, ys], axis=1)
+        ranges = np.array(data.ranges)
+        angle_min = data.angle_min; angle_inc = data.angle_increment
+        valid = (ranges >= data.range_min) & (ranges <= data.range_max) & (~np.isnan(ranges))
+        indices = np.where(valid)[0]
+        
+        if len(indices) < self.Pmin: return
+        
+        ranges = ranges[indices]; angles = angle_min + indices * angle_inc
+        xs = ranges * np.cos(angles); ys = ranges * np.sin(angles)
+        points = np.stack([xs, ys], axis=1)
+        
+        segments, used_mask = self.extract_segments(points, angles)
+        self.publish_extracted_segments(segments, data.header)
 
-            # Extraer segmentos y puntos
-            segments, used_mask = self.extract_segments(points, angles)
-            
-            # (Opcional) Publicar segmentos para ver qué ve el robot
-            self.publish_segments_vis(data, segments)
+        obs_segments = self.segments_to_landmarks(segments)
+        obs_clusters = self.extract_point_landmarks(points, used_mask, segments)
+        
+        observations = []
+        if len(obs_segments) > 0:
+            for r, th in obs_segments: observations.append((r, th, "segment"))
+        if len(obs_clusters) > 0:
+            for r, th in obs_clusters: observations.append((r, th, "cluster"))
 
-            corner_landmarks = self.segments_to_landmarks(segments)
-            point_landmarks = self.extract_point_landmarks(points, used_mask, segments)
+        if observations:
+            for part in self.particles:
+                self.update_particle_weight(part, observations)
 
-            # Juntar todo lo observado
-            observed = []
-            if len(corner_landmarks) > 0: observed.append(corner_landmarks)
-            if len(point_landmarks) > 0: observed.append(point_landmarks)
+        self.normalize_and_resample()
+        self.publish_results()
+
+    def publish_extracted_segments(self, segments, header):
+        """ Convierte LineSegment a MarkerArray y publica """
+        ma = MarkerArray()
+        current_time = self.get_clock().now().to_msg()
+        
+        for i, seg in enumerate(segments):
+            m = Marker()
+            m.header.frame_id = header.frame_id # Mismo frame (base_scan)
+            m.header.stamp = current_time       # <--- CAMBIO AQUÍ
             
-            if len(observed) > 0:
-                observed = np.vstack(observed)
+            m.ns = "raw_segments"
+            m.id = i
+            m.type = Marker.LINE_STRIP
+            m.action = Marker.ADD
+            m.scale.x = 0.05
+            m.color.r = 1.0; m.color.g = 1.0; m.color.b = 0.0; m.color.a = 1.0 # Amarillo
+            
+            p1 = Point(x=float(seg.e1[0]), y=float(seg.e1[1]), z=0.0)
+            p2 = Point(x=float(seg.e2[0]), y=float(seg.e2[1]), z=0.0)
+            m.points = [p1, p2]
+            
+            ma.markers.append(m)
+        
+        self.segments_pub.publish(ma)
+
+    def update_particle_weight(self, part, observations):
+        total_weight = 1.0
+        
+        for r, theta, obs_type in observations:
+            obs_x = part.x + r * np.cos(part.orientation + theta)
+            obs_y = part.y + r * np.sin(part.orientation + theta)
+            
+            best_dist_sq = float('inf')
+            best_landmark = None
+
+            for lid, lm in part.landmarks.items():
+                if lm['type'] != 'unknown' and lm['type'] != obs_type:
+                    continue
+                
+                dx = lm['mu'][0] - obs_x
+                dy = lm['mu'][1] - obs_y
+                dist_sq = dx*dx + dy*dy
+                
+                if dist_sq < best_dist_sq:
+                    best_dist_sq = dist_sq
+                    best_landmark = lm
+
+            MAX_MATCH_DIST_SQ = 1.5**2 
+
+            if best_landmark and best_dist_sq < MAX_MATCH_DIST_SQ:
+                prob = part.get_likelihood(
+                    np.array([r, theta]), 
+                    best_landmark['mu'], 
+                    best_landmark['sigma'], 
+                    self.R
+                )
+                total_weight *= prob
             else:
-                observed = np.empty((0, 2))
+                total_weight *= 0.1 
+        
+        part.weight *= total_weight
 
-            # 2. Actualización MCL (Pesos)
-            if len(observed) > 0 and len(self.map_landmarks) > 0:
-                for p in self.particles:
-                    w = p.calculate_weight(observed, self.map_landmarks, self.R)
-                    p.weight *= w
+    def get_distance_to_segment(self, point, seg):
+        p, a, b = point, seg.e1, seg.e2
+        ab, ap = b - a, p - a
+        len_sq = np.dot(ab, ab)
+        if len_sq == 0: return np.linalg.norm(ap)
+        t = max(0.0, min(1.0, np.dot(ap, ab) / len_sq))
+        return np.linalg.norm(p - (a + t * ab))
 
-            # 3. Resampling
-            self.normalize_and_resample()
+    def extract_point_landmarks(self, points, used_mask, segments):
+        leftover_indices = np.where(~used_mask)[0]
+        if len(leftover_indices) == 0: return np.empty((0, 2))
+        candidates = []; current_cluster = [points[leftover_indices[0]]]
+        for i in range(1, len(leftover_indices)):
+            idx, prev_idx = leftover_indices[i], leftover_indices[i-1]
+            pt, prev_pt = points[idx], points[prev_idx]
+            if (idx - prev_idx < 5) and (np.linalg.norm(pt - prev_pt) < 0.1): 
+                current_cluster.append(pt)
+            else:
+                if 3 <= len(current_cluster) <= 10: candidates.append(np.array(current_cluster))
+                current_cluster = [pt]
+        if 3 <= len(current_cluster) <= 10: candidates.append(np.array(current_cluster))
 
-            # 4. Publicar Resultado
-            best_particle = max(self.particles, key=lambda p: p.weight)
-            self.publish_tf(best_particle)
-            self.publish_pose(best_particle)
-            # self.publish_particle_cloud() # Descomentar si quieres ver la nube (consume recursos)
-
-    # --- LÓGICA DE EXTRACCIÓN (REUTILIZADA DE SLAM.PY) ---
+        landmarks = []
+        for cluster_pts in candidates:
+            centroid = np.mean(cluster_pts, axis=0)
+            is_isolated = True
+            for seg in segments:
+                if self.get_distance_to_segment(centroid, seg) < 0.35: 
+                    is_isolated = False; break 
+            if is_isolated:
+                landmarks.append([np.hypot(centroid[0], centroid[1]), np.arctan2(centroid[1], centroid[0])])
+        return np.array(landmarks) if landmarks else np.empty((0, 2))
+    
     def extract_segments(self, points, angles):
-        segments = []
-        N = len(points)
-        used_mask = np.zeros(N, dtype=bool) 
-        start = 0
+        segments = []; N = len(points); used_mask = np.zeros(N, dtype=bool); start = 0
         while start < N - self.Pmin:
             res = self.seed_segment_detection(points[start:], angles[start:], self.eps, self.delta, self.Snum, self.Pmin)
             if res is None: break
-            i_seed, j_seed, p0, v = res
-            i_seed += start; j_seed += start
+            i_seed, j_seed, _, _ = res; i_seed += start; j_seed += start
             seg_dict = self.grow_region(points, i_seed, j_seed, self.eps, self.Pmin, self.Lmin)
-            if seg_dict is None:
-                start = j_seed + 1
-                continue
+            if seg_dict is None: start = j_seed + 1; continue
             used_mask[seg_dict["Pb"] : seg_dict["Pf"] + 1] = True 
-            # Crear segmento
-            t1 = np.dot(points[seg_dict["Pb"]] - seg_dict["p0"], seg_dict["v"])
-            t2 = np.dot(points[seg_dict["Pf"]]   - seg_dict["p0"], seg_dict["v"])
-            e1 = seg_dict["p0"] + t1 * seg_dict["v"]
-            e2 = seg_dict["p0"] + t2 * seg_dict["v"]
-            segments.append(LineSegment(seg_dict["Pb"], seg_dict["Pf"], seg_dict["p0"], seg_dict["v"], e1, e2))
+            p0, v = seg_dict["p0"], seg_dict["v"]
+            p_start, p_end = points[seg_dict["Pb"]], points[seg_dict["Pf"]]
+            e1 = p0 + np.dot(p_start - p0, v) * v; e2 = p0 + np.dot(p_end - p0, v) * v
+            segments.append(LineSegment(seg_dict["Pb"], seg_dict["Pf"], p0, v, e1, e2))
             start = seg_dict["Pf"] + 1
-        return segments, used_mask
+        return self.process_overlaps(points, segments), used_mask
 
     def seed_segment_detection(self, points, angles, eps, delta, S, P):
         Np = len(points)
         for i in range(Np-P):
             j = i + S
             if j >= Np: break
-            p0, v = self.fit_line(points[i:j+1])
-            flag = True
-            for k in range(i, j+1):
-                pk_prime = self.predict_point(p0, v, angles[k])
-                if np.linalg.norm(points[k] - pk_prime) > delta or self.dist_point_line(points[k], p0, v) > eps:
+            p0, v = self.fit_seed(points,i,j); flag = True
+            for k in range(i,j+1):
+                pk_prime = self.predict_point_from_bearing(p0, v, angles[k])
+                if np.linalg.norm(points[k] - pk_prime) > delta or self.point_to_line_distance(points[k], p0, v) > eps:
                     flag = False; break
-            if flag: return i, j, p0, v
+            if flag: return i,j,p0,v
         return None
     
-    def grow_region(self, points, i, j, eps, Pmin, Lmin):
-        Np = len(points); Pb, Pf = i, j
-        p0, v = self.fit_line(points[Pb:Pf+1])
-        # Adelante
-        k = Pf + 1
-        while k < Np and self.dist_point_line(points[k], p0, v) < eps:
-            Pf = k; p0, v = self.fit_line(points[Pb:Pf+1]); k+=1
-        # Atras
-        k = Pb - 1
-        while k >= 0 and self.dist_point_line(points[k], p0, v) < eps:
-            Pb = k; p0, v = self.fit_line(points[Pb:Pf+1]); k-=1
-        if np.linalg.norm(points[Pf]-points[Pb]) >= Lmin and (Pf-Pb+1) >= Pmin:
-            return {"Pb": Pb, "Pf": Pf, "p0": p0, "v": v}
-        return None
-
-    def fit_line(self, pts):
-        m = np.mean(pts, axis=0)
-        centered = pts - m
-        _, _, vt = np.linalg.svd(centered)
-        return m, vt[0]
-
-    def dist_point_line(self, p, p0, v):
-        w = p - p0
-        return abs(w[0]*v[1] - w[1]*v[0])
-    
-    def predict_point(self, p0, v, theta):
+    def point_to_line_distance(self, p, p0, v): return abs((p-p0)[0]*v[1] - (p-p0)[1]*v[0])
+    def predict_point_from_bearing(self, p0, v, theta):
         denom = v[0]*np.sin(theta) - v[1]*np.cos(theta)
-        if abs(denom) < 1e-6: return p0
-        t = (p0[1]*np.cos(theta) - p0[0]*np.sin(theta)) / denom
-        return p0 + t * v
+        return p0 + ((p0[1]*np.cos(theta) - p0[0]*np.sin(theta))/denom) * v if denom != 0 else p0
+    def fit_seed(self, points, i, j):
+        pts = points[i:j+1]; p0 = np.mean(pts,axis=0)
+        _,_,vt = np.linalg.svd(pts - p0); v = vt[0] / np.linalg.norm(vt[0])
+        return p0,v
+    def grow_region(self, points, i, j, eps, Pmin, Lmin):
+        Np = len(points); Pb, Pf = i, j; p0, v = self.fit_seed(points, Pb, Pf)
+        k = Pf + 1
+        while k < Np and self.point_to_line_distance(points[k],p0,v) < eps: Pf = k; p0,v = self.fit_seed(points,Pb,Pf); k+=1
+        k = Pb - 1
+        while k >= 0 and self.point_to_line_distance(points[k],p0,v) < eps: Pb = k; p0,v = self.fit_seed(points,Pb,Pf); k-=1
+        if (np.linalg.norm(points[Pf] - points[Pb]) >= Lmin) and (Pf - Pb + 1 >= Pmin): return {"Pb": Pb, "Pf": Pf, "p0": p0, "v": v}
+        return None
+    def process_overlaps(self, points, segments):
+        if len(segments) <= 1: return segments
+        for i in range(len(segments)-1):
+            l_i, l_j = segments[i], segments[i + 1]
+            if l_j.m <= l_i.n:
+                split_k = l_j.m
+                for k in range(l_j.m, l_i.n + 1):
+                    if self.point_to_line_distance(points[k], l_j.p0, l_j.v) < self.point_to_line_distance(points[k], l_i.p0, l_i.v): split_k = k; break
+                l_i.n = split_k - 1; l_j.m = split_k
+                if l_i.n > l_i.m: l_i.p0, l_i.v = self.fit_seed(points, l_i.m, l_i.n)
+                if l_j.n > l_j.m: l_j.p0, l_j.v = self.fit_seed(points, l_j.m, l_j.n)
+        return segments
 
     def segments_to_landmarks(self, segments):
-        lms = []
+        landmarks = []
         for i in range(len(segments)):
-            for j in range(i+1, len(segments)):
+            for j in range(i + 1, len(segments)):
                 s1, s2 = segments[i], segments[j]
-                if abs(np.dot(s1.v, s2.v)) > np.cos(self.angle_thresh): continue # Paralelos
-                # Intersección
+                if np.abs(np.dot(s1.v, s2.v)) > np.cos(self.angle_thresh): continue 
                 A = np.array([[s1.v[0], -s2.v[0]], [s1.v[1], -s2.v[1]]])
                 b = s2.p0 - s1.p0
-                try:
-                    x = np.linalg.solve(A, b)
-                    inter = s1.p0 + x[0]*s1.v
-                    # Verificar cercanía
-                    d1 = min(np.linalg.norm(inter-s1.e1), np.linalg.norm(inter-s1.e2))
-                    d2 = min(np.linalg.norm(inter-s2.e1), np.linalg.norm(inter-s2.e2))
+                try: x = np.linalg.solve(A, b); intersection = s1.p0 + x[0] * s1.v
+                except: intersection = None
+                
+                if intersection is not None:
+                    d1 = min(np.linalg.norm(intersection-s1.e1), np.linalg.norm(intersection-s1.e2))
+                    d2 = min(np.linalg.norm(intersection-s2.e1), np.linalg.norm(intersection-s2.e2))
                     if d1 < self.corner_thresh and d2 < self.corner_thresh:
-                        lms.append([np.hypot(inter[0], inter[1]), np.arctan2(inter[1], inter[0])])
-                except: pass
-        return np.array(lms) if lms else np.empty((0, 2))
+                        landmarks.append([np.hypot(intersection[0], intersection[1]), np.arctan2(intersection[1], intersection[0])])
+        return np.array(landmarks) if landmarks else np.empty((0, 2))
 
-    def extract_point_landmarks(self, points, used_mask, segments):
-        # Simplificación de extracción de puntos aislados (clusters pequeños)
-        leftover = points[~used_mask]
-        if len(leftover) < 3: return np.empty((0, 2))
-        
-        # Clustering simple por distancia
-        clusters = []; curr = [leftover[0]]
-        for i in range(1, len(leftover)):
-            if np.linalg.norm(leftover[i] - leftover[i-1]) < 0.2:
-                curr.append(leftover[i])
-            else:
-                if 3 <= len(curr) <= 10: clusters.append(np.mean(curr, axis=0))
-                curr = [leftover[i]]
-        if 3 <= len(curr) <= 10: clusters.append(np.mean(curr, axis=0))
-        
-        lms = []
-        for c in clusters:
-            # Filtrar si está muy cerca de una pared (segmento)
-            isolated = True
-            for s in segments:
-                # Distancia punto-segmento
-                ab = s.e2 - s.e1
-                t = np.dot(c - s.e1, ab) / np.dot(ab, ab)
-                closest = s.e1 + np.clip(t, 0, 1) * ab
-                if np.linalg.norm(c - closest) < 0.35:
-                    isolated = False; break
-            if isolated:
-                lms.append([np.hypot(c[0], c[1]), np.arctan2(c[1], c[0])])
-        return np.array(lms) if lms else np.empty((0, 2))
-
-    # --- PARTICLE FILTER CORE ---
     def normalize_and_resample(self):
         weights = np.array([p.weight for p in self.particles])
-        if weights.sum() == 0: weights[:] = 1.0
-        weights /= weights.sum()
-        
-        # Actualizar pesos en objetos
+        if np.sum(weights) == 0: weights[:] = 1.0 / len(weights)
+        else: weights /= np.sum(weights)
         for i, p in enumerate(self.particles): p.weight = weights[i]
-
-        # Effective sample size
-        neff = 1.0 / np.sum(weights**2)
-        if neff < self.num_particles / 2.0:
-            self.resample_sus(weights)
-
-    def resample_sus(self, weights):
-        # Stochastic Universal Sampling
-        cumulative = np.cumsum(weights)
-        step = 1.0 / self.num_particles
-        start = np.random.uniform(0, step)
-        indices = []
-        ptr = start
-        idx = 0
-        for _ in range(self.num_particles):
-            while ptr > cumulative[idx]:
-                idx = min(idx + 1, len(weights) - 1)
-            indices.append(idx)
-            ptr += step
         
-        new_particles = []
-        for i in indices:
-            p_old = self.particles[i]
-            # Copia con ligero jitter para evitar colapso total
-            new_p = p_old.copy()
-            new_particles.append(new_p)
-        self.particles = new_particles
+        neff = 1.0 / np.sum(np.square(weights))
+        if neff < 0.5 * self.num_particles:
+            step = 1.0 / self.num_particles; start = np.random.uniform(0, step)
+            pointers = [start + i*step for i in range(self.num_particles)]
+            indices = []; i = 0; cumsum = np.cumsum(weights)
+            for p_ptr in pointers:
+                while p_ptr > cumsum[i]: i += 1
+                indices.append(i)
+            self.particles = [self.particles[i].copy_particle() for i in indices]
 
-    # --- PUBLICADORES ---
-    def publish_tf(self, particle):
+    def publish_results(self):
+        best_particle = max(self.particles, key=lambda p: p.weight)
+        
         t = TransformStamped()
         t.header.stamp = self.get_clock().now().to_msg()
-        t.header.frame_id = "map"
-        t.child_frame_id = "base_link"
-        t.transform.translation.x = particle.x
-        t.transform.translation.y = particle.y
-        t.transform.rotation = yaw_to_quaternion(particle.orientation)
+        t.header.frame_id = "map"; t.child_frame_id = "base_link"
+        t.transform.translation.x = best_particle.x; t.transform.translation.y = best_particle.y
+        t.transform.rotation = yaw_to_quaternion(best_particle.orientation)
         self.tf_broadcaster.sendTransform(t)
-
-    def publish_pose(self, particle):
+        
         ps = PoseStamped()
         ps.header.frame_id = "map"
         ps.header.stamp = self.get_clock().now().to_msg()
-        ps.pose.position.x = particle.x
-        ps.pose.position.y = particle.y
-        ps.pose.orientation = yaw_to_quaternion(particle.orientation)
+        ps.pose.position.x = best_particle.x
+        ps.pose.position.y = best_particle.y
+        ps.pose.orientation = t.transform.rotation
         self.pose_pub.publish(ps)
-
-    def publish_static_map(self):
-        """ Visualiza los landmarks cargados en VERDE """
+        
         ma = MarkerArray()
-        for lid, val in self.map_landmarks.items():
-            m = Marker()
-            m.header.frame_id = "map"
-            m.id = int(lid)
-            m.type = Marker.SPHERE
-            m.action = Marker.ADD
-            m.pose.position.x = float(val['x'])
-            m.pose.position.y = float(val['y'])
+        for lid, lm in self.known_landmarks.items():
+            m = Marker(); m.header.frame_id = "map"; m.header.stamp = self.get_clock().now().to_msg()
+            m.type = Marker.SPHERE; m.action = Marker.ADD; m.id = lid
+            m.pose.position.x = float(lm['mu'][0]); m.pose.position.y = float(lm['mu'][1])
             m.scale.x = 0.2; m.scale.y = 0.2; m.scale.z = 0.2
-            m.color.r = 0.0; m.color.g = 1.0; m.color.b = 0.0; m.color.a = 1.0
+            
+            if lm['type'] == 'segment': m.color.r = 1.0; m.color.a = 0.8 
+            elif lm['type'] == 'cluster': m.color.g = 1.0; m.color.a = 0.8 
+            else: m.color.b = 1.0; m.color.a = 0.5
             ma.markers.append(m)
-        self.map_vis_pub.publish(ma)
-
-    def publish_segments_vis(self, data, segments):
-        msg = MarkerArray()
-        for idx, seg in enumerate(segments):
-            m = Marker()
-            m.header.frame_id = data.header.frame_id
-            m.header.stamp = data.header.stamp
-            m.id = idx + 1000
-            m.type = Marker.LINE_STRIP
-            m.scale.x = 0.05
-            m.color.r = 1.0; m.color.g = 1.0; m.color.b = 0.0; m.color.a = 1.0
-            p1 = Point(x=float(seg.e1[0]), y=float(seg.e1[1]), z=0.0)
-            p2 = Point(x=float(seg.e2[0]), y=float(seg.e2[1]), z=0.0)
-            m.points = [p1, p2]
-            msg.markers.append(m)
-        self.segments_pub.publish(msg)
+        self.markers_pub.publish(ma)
 
 def main():
     rclpy.init()
     node = LocalizationNode()
     try: rclpy.spin(node)
-    except KeyboardInterrupt: pass
     finally: node.destroy_node(); rclpy.shutdown()
 
-if __name__ == "__main__": main()
+if __name__ == '__main__':
+    main()

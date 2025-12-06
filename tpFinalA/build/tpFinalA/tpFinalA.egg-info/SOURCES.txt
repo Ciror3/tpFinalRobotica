@@ -20,5 +20,6 @@ tpFinalA/localization.py
 tpFinalA/navigation.py
 tpFinalA/odometry.py
 tpFinalA/path_planning.py
+tpFinalA/save_landmarks.py
 tpFinalA/save_map.py
 tpFinalA/slam.py
