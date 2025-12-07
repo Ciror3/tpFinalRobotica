@@ -17,6 +17,7 @@ test/test_flake8.py
 test/test_pep257.py
 tpFinalA/__init__.py
 tpFinalA/channel_planner.py
+tpFinalA/d_star_lite.py
 tpFinalA/localization.py
 tpFinalA/navigation.py
 tpFinalA/odometry.py

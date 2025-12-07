@@ -59,12 +59,6 @@ class PathPlannerNode(Node):
             
             if img is None:
                 raise ValueError("cv2.imread devolvió None. Formato inválido.")
-
-            # --- CONVERSIÓN DE VALORES ---
-            # En PGM generado por GridMapper:
-            # 0 (Negro) = Ocupado -> Costo 100
-            # 254 (Blanco) = Libre -> Costo 0
-            # 205 (Gris) = Desconocido -> Costo 100 (evitar zonas desconocidas) o 50
             
             grid = np.zeros_like(img, dtype=int)
             

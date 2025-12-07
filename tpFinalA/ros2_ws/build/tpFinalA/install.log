@@ -1,4 +1,5 @@
 /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/install/tpFinalA/lib/python3.10/site-packages/tpFinalA/localization.py
+/home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/install/tpFinalA/lib/python3.10/site-packages/tpFinalA/d_star_lite.py
 /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/install/tpFinalA/lib/python3.10/site-packages/tpFinalA/channel_planner.py
 /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/install/tpFinalA/lib/python3.10/site-packages/tpFinalA/slam.py
 /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/install/tpFinalA/lib/python3.10/site-packages/tpFinalA/path_planning.py
@@ -8,6 +9,7 @@
 /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/install/tpFinalA/lib/python3.10/site-packages/tpFinalA/save_landmarks.py
 /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/install/tpFinalA/lib/python3.10/site-packages/tpFinalA/__init__.py
 /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/install/tpFinalA/lib/python3.10/site-packages/tpFinalA/__pycache__/localization.cpython-310.pyc
+/home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/install/tpFinalA/lib/python3.10/site-packages/tpFinalA/__pycache__/d_star_lite.cpython-310.pyc
 /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/install/tpFinalA/lib/python3.10/site-packages/tpFinalA/__pycache__/channel_planner.cpython-310.pyc
 /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/install/tpFinalA/lib/python3.10/site-packages/tpFinalA/__pycache__/slam.cpython-310.pyc
 /home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/install/tpFinalA/lib/python3.10/site-packages/tpFinalA/__pycache__/path_planning.cpython-310.pyc

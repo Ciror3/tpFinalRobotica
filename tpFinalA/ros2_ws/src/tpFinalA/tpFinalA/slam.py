@@ -15,7 +15,6 @@ def fast_mahalanobis_sq(px, py, ptheta, lm_mu, lm_sigma, z_r, z_theta, R):
     Calcula la distancia de Mahalanobis al cuadrado entre una medida y un landmark.
     Reemplaza h_and_H y np.linalg.inv para máxima velocidad.
     """
-    # --- 1. Predicción de Medida (h) y Jacobianos (H) ---
     dx = lm_mu[0] - px
     dy = lm_mu[1] - py
     q = dx*dx + dy*dy
@@ -23,47 +22,39 @@ def fast_mahalanobis_sq(px, py, ptheta, lm_mu, lm_sigma, z_r, z_theta, R):
     if q < 1e-12: q = 1e-12 
     r_pred = math.sqrt(q)
     
-    # Ángulo esperado con wrap manual de (-pi, pi)
     angle_pred = math.atan2(dy, dx) - ptheta
     while angle_pred <= -np.pi: angle_pred += 2*np.pi
     while angle_pred > np.pi: angle_pred -= 2*np.pi
 
-    # Jacobiano H (2x2) construido manualmente
     h00 = dx / r_pred; h01 = dy / r_pred
     h10 = -dy / q;     h11 = dx / q
 
-    # --- 2. Covarianza de Innovación: S = H @ Sigma @ H.T + R ---
     s00 = lm_sigma[0, 0]; s01 = lm_sigma[0, 1]
     s10 = lm_sigma[1, 0]; s11 = lm_sigma[1, 1]
 
-    # Multiplicación H @ Sigma (Intermedio 2x2)
     tmp00 = h00 * s00 + h01 * s10
     tmp01 = h00 * s01 + h01 * s11
     tmp10 = h10 * s00 + h11 * s10
     tmp11 = h10 * s01 + h11 * s11
 
-    # S resultante (2x2)
     S00 = (tmp00 * h00 + tmp01 * h01) + R[0, 0]
     S01 = (tmp00 * h10 + tmp01 * h11) 
     S10 = (tmp10 * h00 + tmp11 * h01) 
     S11 = (tmp10 * h10 + tmp11 * h11) + R[1, 1]
 
-    # --- 3. Inversa de S (Determinante 2x2) ---
     det_S = S00 * S11 - S01 * S10
     if det_S <= 1e-15: 
-        return 9999.0 # Singular
+        return 9999.0
 
     invDet = 1.0 / det_S
     invS00 =  S11 * invDet; invS01 = -S01 * invDet
     invS10 = -S10 * invDet; invS11 =  S00 * invDet
 
-    # --- 4. Innovación (nu) ---
     nu_r = z_r - r_pred
     nu_th = z_theta - angle_pred
     while nu_th <= -np.pi: nu_th += 2*np.pi
     while nu_th > np.pi: nu_th -= 2*np.pi
 
-    # --- 5. Distancia Mahalanobis: nu.T @ invS @ nu ---
     t0 = nu_r * invS00 + nu_th * invS10
     t1 = nu_r * invS01 + nu_th * invS11
     d2 = t0 * nu_r + t1 * nu_th
@@ -94,7 +85,6 @@ class Particle():
 
     def move_odom(self, odom, alpha):
         dist, dr1, dr2 = odom
-        # Modelo Odometría Probabilístico
         varRot1 = alpha[0]*abs(dr1) + alpha[1]*dist
         varRot2 = alpha[0]*abs(dr2) + alpha[1]*dist
         varTrans = alpha[3]*(abs(dr1)+abs(dr2)) + alpha[2]*dist
@@ -139,7 +129,6 @@ class Particle():
         I = np.eye(2)
         Sigma_new = (I - K @ H) @ sigma
         
-        # Simetrizar covarianza para evitar errores numéricos
         Sigma_new = 0.5 * (Sigma_new + Sigma_new.T)
         
         self.landmarks[lid]['mu'] = mu_new
@@ -158,12 +147,10 @@ class Particle():
         
         lid = max(self.landmarks.keys()) + 1 if self.landmarks else 0
         
-        # GUARDAMOS EL TIPO AQUI
         self.landmarks[lid] = {'mu': mu, 'sigma': sigma, 'type': lm_type}
         return mu, sigma
     
     def copy_particle(self):
-        # Copia manual optimizada (más rápido que deepcopy)
         p = Particle()
         p.x = self.x; p.y = self.y; p.orientation = self.orientation; p.weight = self.weight
         for lid, val in self.landmarks.items():

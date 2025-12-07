@@ -99,10 +99,10 @@ class GridMapper:
     def save_map_to_file(self, file_base="mi_mapa_grid"):
         try:
             # Generar PGM
-            pgm_data = np.full(self.grid.shape, 205, dtype=np.uint8) # 205=Gris
-            pgm_data[self.grid < -0.5] = 254 # Blanco (Libre)
-            pgm_data[self.grid > 0.5] = 0    # Negro (Ocupado)
-            pgm_data = np.flipud(pgm_data)   # Flip para visualizadores de imagen
+            pgm_data = np.full(self.grid.shape, 205, dtype=np.uint8) 
+            pgm_data[self.grid < -0.5] = 254 
+            pgm_data[self.grid > 0.5] = 0    
+            pgm_data = np.flipud(pgm_data)   
 
             filename_pgm = f"{file_base}.pgm"
             with open(filename_pgm, 'wb') as f:

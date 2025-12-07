@@ -36,18 +36,11 @@ def generate_launch_description():
         name='controller',
         output='screen'
     )
-
-    rviz_config_file = os.path.join(
-        get_package_share_directory(package_name),
-        'rviz', 
-        'fastslam_config.rviz'
-    )
     
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
         name='rviz2',
-        # arguments=['-d', rviz_config_file],
         parameters=[sim_time_config],
         output='screen'
     )

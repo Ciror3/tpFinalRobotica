@@ -59,12 +59,6 @@ class PathPlannerNode(Node):
             
             if img is None:
                 raise ValueError("cv2.imread devolvió None. Formato inválido.")
-
-            # --- CONVERSIÓN DE VALORES ---
-            # En PGM generado por GridMapper:
-            # 0 (Negro) = Ocupado -> Costo 100
-            # 254 (Blanco) = Libre -> Costo 0
-            # 205 (Gris) = Desconocido -> Costo 100 (evitar zonas desconocidas) o 50
             
             grid = np.zeros_like(img, dtype=int)
             
@@ -92,7 +86,7 @@ class PathPlannerNode(Node):
             with open(filepath, 'r') as f:
                 landmarks = json.load(f)
             
-            radius_px = 5
+            radius_px = 4
             
             for lm in landmarks:
                 lx, ly = lm['x'], lm['y']
