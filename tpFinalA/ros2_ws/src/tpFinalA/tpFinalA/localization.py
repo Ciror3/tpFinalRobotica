@@ -5,6 +5,7 @@ from geometry_msgs.msg import Quaternion, Point, PoseStamped, TransformStamped
 from visualization_msgs.msg import Marker, MarkerArray
 from sensor_msgs.msg import LaserScan
 from tf2_ros import TransformBroadcaster
+from rclpy.qos import qos_profile_sensor_data
 from custom_msgs.msg import DeltaOdom 
 import math
 import json
@@ -101,23 +102,26 @@ class LocalizationNode(Node):
             self.get_logger().info(f"Mapa cargado correctamente: {len(self.known_landmarks)} landmarks.")
 
         # 2. Configuración
-        self.num_particles = 300 
+        self.num_particles = 100 
         self.particles = [Particle(self.known_landmarks) for _ in range(self.num_particles)]
         
         for p in self.particles:
-            p.x = np.random.normal(0, 0.1)
-            p.y = np.random.normal(0, 0.1)
-            p.orientation = np.random.normal(0, 0.05)
+            p.x = 0.0 # Posición inicial fija
+            p.y = 0.0 # Posición inicial fija
+            p.orientation = 0.0 # Orientación inicial fija
+            # p.x = np.random.normal(0, 0.1)
+            # p.y = np.random.normal(0, 0.1)
+            # p.orientation = np.random.normal(0, 0.05)
 
         self.R = np.diag([0.1, 0.05])
 
         self.delta_sub = self.create_subscription(DeltaOdom, "/delta", self.delta_odom_callback, 10)
-        self.scan_sub = self.create_subscription(LaserScan, "/scan", self.scan_callback, 10)
+        self.scan_sub = self.create_subscription(LaserScan, "/scan", self.scan_callback, qos_profile_sensor_data)
         
         self.pose_pub = self.create_publisher(PoseStamped, "/amcl_pose", 10)
         self.markers_pub = self.create_publisher(MarkerArray, "/localization/markers", 10)
         
-        self.segments_pub = self.create_publisher(MarkerArray, "/extracted_segments", 10)
+        self.segments_pub = self.create_publisher(MarkerArray, "/localization/extracted_segments", 10)
         
         self.tf_broadcaster = TransformBroadcaster(self)
 
@@ -205,14 +209,21 @@ class LocalizationNode(Node):
     def update_particle_weight(self, part, observations):
         total_weight = 1.0
         
+        # Pre-calcular posición global del sensor
+        sensor_x = part.x + 0.1 * np.cos(part.orientation)
+        sensor_y = part.y + 0.1 * np.sin(part.orientation)
+
         for r, theta, obs_type in observations:
-            obs_x = part.x + r * np.cos(part.orientation + theta)
-            obs_y = part.y + r * np.sin(part.orientation + theta)
+            obs_x = sensor_x + r * np.cos(part.orientation + theta)
+            obs_y = sensor_y + r * np.sin(part.orientation + theta)
             
             best_dist_sq = float('inf')
             best_landmark = None
 
+            # 1. Búsqueda del vecino más cercano
             for lid, lm in part.landmarks.items():
+                # FILTRO DE TIPO: No confundir un punto (cluster) con una pared (segment)
+                # Si la valija se ve como 'cluster', no la compares con 'segment'
                 if lm['type'] != 'unknown' and lm['type'] != obs_type:
                     continue
                 
@@ -224,9 +235,13 @@ class LocalizationNode(Node):
                     best_dist_sq = dist_sq
                     best_landmark = lm
 
-            MAX_MATCH_DIST_SQ = 1.5**2 
+            # 2. COMPUERTA (GATING): Aquí está la magia
+            # Antes tenías 1.5**2 (2.25m). ¡Es muchísimo!
+            # Bájalo a 0.5 metros. Si está más lejos, es un objeto nuevo.
+            GATE_DIST_SQ = 0.5**2 
 
-            if best_landmark and best_dist_sq < MAX_MATCH_DIST_SQ:
+            if best_landmark and best_dist_sq < GATE_DIST_SQ:
+                # CASO A: Coincidencia Exitosa -> Usamos para localizar
                 prob = part.get_likelihood(
                     np.array([r, theta]), 
                     best_landmark['mu'], 
@@ -235,7 +250,12 @@ class LocalizationNode(Node):
                 )
                 total_weight *= prob
             else:
-                total_weight *= 0.1 
+                # CASO B: Objeto Desconocido (Valija) -> IGNORAR
+                # Antes hacías: total_weight *= 0.1 (Castigo)
+                # Esto mataba a las partículas buenas que veían la valija.
+                # AHORA: No hacemos nada (weight *= 1.0). 
+                # El robot dice: "Veo algo raro, pero no dejo que me confunda".
+                pass 
         
         part.weight *= total_weight
 
@@ -403,3 +423,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

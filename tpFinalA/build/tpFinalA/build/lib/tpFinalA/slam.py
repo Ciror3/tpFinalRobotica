@@ -199,14 +199,12 @@ class fastslamNode(Node):
         self.get_logger().info(f"FastSLAM iniciado con {num_particles} partículas.")
         
     def delta_odom_callback(self, msg: DeltaOdom):
-        # Mover partículas y publicar TF inmediatamente para suavidad
         noise = [0.05, 0.05, 0.05, 0.05] 
         delta_odom = [msg.dt, msg.dr1, msg.dr2]
         
         for part in self.particles:
             part.move_odom(delta_odom, noise)
             
-        # Publicamos TF con tiempo actual (odometría es rápida)
         self.publish_tf(stamp=None) 
 
     def scan_callback(self, data):

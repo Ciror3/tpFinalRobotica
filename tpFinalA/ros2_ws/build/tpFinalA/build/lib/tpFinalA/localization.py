@@ -5,6 +5,7 @@ from geometry_msgs.msg import Quaternion, Point, PoseStamped, TransformStamped
 from visualization_msgs.msg import Marker, MarkerArray
 from sensor_msgs.msg import LaserScan
 from tf2_ros import TransformBroadcaster
+from rclpy.qos import qos_profile_sensor_data
 from custom_msgs.msg import DeltaOdom 
 import math
 import json
@@ -33,7 +34,6 @@ class Particle():
         self.orientation = 0.0
         self.weight = 1.0
         
-        # Referencia al mapa estático (Solo lectura)
         self.landmarks = static_map_ref if static_map_ref else {}
 
     def set(self, new_x, new_y, new_orientation):
@@ -43,7 +43,6 @@ class Particle():
 
     def move_odom(self, odom, alpha):
         dist, dr1, dr2 = odom
-        # Modelo de movimiento odometrico con ruido
         varRot1 = alpha[0]*abs(dr1) + alpha[1]*dist
         varRot2 = alpha[0]*abs(dr2) + alpha[1]*dist
         varTrans = alpha[3]*(abs(dr1)+abs(dr2)) + alpha[2]*dist
@@ -57,30 +56,20 @@ class Particle():
         self.orientation += dr1_hat + dr2_hat
 
     def get_likelihood(self, z, landmark_mu, landmark_sigma, R):
-        """
-        Calcula la probabilidad P(z | mapa, x) usando Mahalanobis.
-        NO actualiza el mapa.
-        """
-        # Predicción: Dónde debería estar el landmark según mi posición
         dx = landmark_mu[0] - self.x
         dy = landmark_mu[1] - self.y
         q = max(dx*dx + dy*dy, 1e-12)
         r_pred = math.sqrt(q)
         
-        # Ángulo esperado
         angle_pred = wrap(math.atan2(dy, dx) - self.orientation)
         zhat = np.array([r_pred, angle_pred])
         
-        # Jacobiano H
         H = np.array([[ dx/r_pred, dy/r_pred ], 
                       [-dy/q,      dx/q      ]], dtype=float)
         
-        # Innovación
         nu = z - zhat
         nu[1] = wrap(nu[1])
         
-        # Covarianza de la innovación (Incertidumbre Landmark + Sensor)
-        # En localización pura, landmark_sigma suele ser pequeño/fijo.
         Q = H @ landmark_sigma @ H.T + R
         
         try:
@@ -95,49 +84,48 @@ class Particle():
             return 1e-12
 
     def copy_particle(self):
-        p = Particle(self.landmarks) # Comparten la referencia al mapa
+        p = Particle(self.landmarks) 
         p.x = self.x
         p.y = self.y
         p.orientation = self.orientation
         p.weight = self.weight
         return p
 
-# --- NODO PRINCIPAL ---
 class LocalizationNode(Node):
     def __init__(self):
         super().__init__("localization_node")
         
-        # 1. CARGAR MAPA
-        # Asegúrate de que este archivo existe en la carpeta donde corres el nodo
         self.known_landmarks = self.load_map("/home/ciror/Desktop/robotica/tps/tpFinalRobotica/tpFinalA/ros2_ws/src/tpFinalA/mapas/mapa_landmarks_clasificados.json")
         if not self.known_landmarks:
-            self.get_logger().error("¡ERROR CRÍTICO: No se encontró 'mi_mapa_landmarks.json'!")
+            self.get_logger().error("¡ERROR CRÍTICO: No se encontró el mapa json!")
         else:
             self.get_logger().info(f"Mapa cargado correctamente: {len(self.known_landmarks)} landmarks.")
 
         # 2. Configuración
-        self.num_particles = 300 
+        self.num_particles = 100 
         self.particles = [Particle(self.known_landmarks) for _ in range(self.num_particles)]
         
-        # Inicialización (asumimos 0,0,0 o dispersión pequeña)
         for p in self.particles:
-            p.x = np.random.normal(0, 0.1)
-            p.y = np.random.normal(0, 0.1)
-            p.orientation = np.random.normal(0, 0.05)
+            p.x = 0.0 # Posición inicial fija
+            p.y = 0.0 # Posición inicial fija
+            p.orientation = 0.0 # Orientación inicial fija
+            # p.x = np.random.normal(0, 0.1)
+            # p.y = np.random.normal(0, 0.1)
+            # p.orientation = np.random.normal(0, 0.05)
 
-        self.R = np.diag([0.1, 0.05]) # Ruido del sensor (Radio, Ángulo)
+        self.R = np.diag([0.1, 0.05])
 
-        # Suscripciones
         self.delta_sub = self.create_subscription(DeltaOdom, "/delta", self.delta_odom_callback, 10)
-        self.scan_sub = self.create_subscription(LaserScan, "/scan", self.scan_callback, 10)
+        self.scan_sub = self.create_subscription(LaserScan, "/scan", self.scan_callback, qos_profile_sensor_data)
         
-        # Publicadores
         self.pose_pub = self.create_publisher(PoseStamped, "/amcl_pose", 10)
         self.markers_pub = self.create_publisher(MarkerArray, "/localization/markers", 10)
+        
+        self.segments_pub = self.create_publisher(MarkerArray, "/localization/extracted_segments", 10)
+        
         self.tf_broadcaster = TransformBroadcaster(self)
 
-        # Parámetros de Extracción (Mismos que SLAM)
-        self.Pmin = 15; self.Lmin = 0.3; self.eps = 0.03; self.Snum = 6; self.delta = 0.1
+        self.Pmin = 18; self.Lmin = 0.34; self.eps = 0.03; self.Snum = 8; self.delta = 0.1
         self.corner_thresh = 0.5; self.angle_thresh = np.deg2rad(30)
 
     def load_map(self, filename):
@@ -148,24 +136,21 @@ class LocalizationNode(Node):
         for item in data:
             lid = item['id']
             mu = np.array([item['x'], item['y']])
-            # Matriz de covarianza fija para el mapa (confianza alta)
             sigma = np.eye(2) * 0.005 
             lm_type = item.get('type', 'unknown')
             landmarks[lid] = {'mu': mu, 'sigma': sigma, 'type': lm_type}
         return landmarks
 
     def delta_odom_callback(self, msg: DeltaOdom):
-        # Ruido de movimiento [rot1, trans, trans, rot2] (ajustar según robot)
         noise = [0.05, 0.05, 0.05, 0.05] 
         delta_odom = [msg.dt, msg.dr1, msg.dr2]
         if abs(msg.dt) > 0.001 or abs(msg.dr1) > 0.001:
-           self.get_logger().info(f"Moviendo: {msg.dt:.3f}, {msg.dr1:.3f}")
+           pass # self.get_logger().info(f"Moviendo: {msg.dt:.3f}, {msg.dr1:.3f}")
         for p in self.particles:
             p.move_odom(delta_odom, noise)
         self.publish_results()
 
     def scan_callback(self, data):
-        # --- 1. EXTRACCIÓN DE CARACTERÍSTICAS (FEATURE EXTRACTION) ---
         ranges = np.array(data.ranges)
         angle_min = data.angle_min; angle_inc = data.angle_increment
         valid = (ranges >= data.range_min) & (ranges <= data.range_max) & (~np.isnan(ranges))
@@ -178,46 +163,67 @@ class LocalizationNode(Node):
         points = np.stack([xs, ys], axis=1)
         
         segments, used_mask = self.extract_segments(points, angles)
-        
-        # Obtener landmarks observados ahora
+        self.publish_extracted_segments(segments, data.header)
+
         obs_segments = self.segments_to_landmarks(segments)
         obs_clusters = self.extract_point_landmarks(points, used_mask, segments)
         
-        # Lista unificada de observaciones: [(r, theta, type), ...]
         observations = []
         if len(obs_segments) > 0:
             for r, th in obs_segments: observations.append((r, th, "segment"))
         if len(obs_clusters) > 0:
             for r, th in obs_clusters: observations.append((r, th, "cluster"))
 
-        # --- 2. ACTUALIZACIÓN DE PESOS (DATA ASSOCIATION) ---
         if observations:
             for part in self.particles:
                 self.update_particle_weight(part, observations)
 
-        # --- 3. RESAMPLING Y PUBLICACIÓN ---
         self.normalize_and_resample()
         self.publish_results()
 
+    def publish_extracted_segments(self, segments, header):
+        """ Convierte LineSegment a MarkerArray y publica """
+        ma = MarkerArray()
+        current_time = self.get_clock().now().to_msg()
+        
+        for i, seg in enumerate(segments):
+            m = Marker()
+            m.header.frame_id = header.frame_id # Mismo frame (base_scan)
+            m.header.stamp = current_time       # <--- CAMBIO AQUÍ
+            
+            m.ns = "raw_segments"
+            m.id = i
+            m.type = Marker.LINE_STRIP
+            m.action = Marker.ADD
+            m.scale.x = 0.05
+            m.color.r = 1.0; m.color.g = 1.0; m.color.b = 0.0; m.color.a = 1.0 # Amarillo
+            
+            p1 = Point(x=float(seg.e1[0]), y=float(seg.e1[1]), z=0.0)
+            p2 = Point(x=float(seg.e2[0]), y=float(seg.e2[1]), z=0.0)
+            m.points = [p1, p2]
+            
+            ma.markers.append(m)
+        
+        self.segments_pub.publish(ma)
+
     def update_particle_weight(self, part, observations):
-        """
-        Compara las observaciones actuales con el mapa cargado.
-        Asocia datos por Cercanía + Tipo.
-        """
         total_weight = 1.0
         
-        # Iteramos sobre lo que el robot ve
+        # Pre-calcular posición global del sensor
+        sensor_x = part.x + 0.1 * np.cos(part.orientation)
+        sensor_y = part.y + 0.1 * np.sin(part.orientation)
+
         for r, theta, obs_type in observations:
-            
-            # 1. Proyectar al mundo global según esta partícula
-            obs_x = part.x + r * np.cos(part.orientation + theta)
-            obs_y = part.y + r * np.sin(part.orientation + theta)
+            obs_x = sensor_x + r * np.cos(part.orientation + theta)
+            obs_y = sensor_y + r * np.sin(part.orientation + theta)
             
             best_dist_sq = float('inf')
             best_landmark = None
 
-            # 2. Buscar en el mapa cargado el landmark más cercano del mismo tipo
+            # 1. Búsqueda del vecino más cercano
             for lid, lm in part.landmarks.items():
+                # FILTRO DE TIPO: No confundir un punto (cluster) con una pared (segment)
+                # Si la valija se ve como 'cluster', no la compares con 'segment'
                 if lm['type'] != 'unknown' and lm['type'] != obs_type:
                     continue
                 
@@ -229,11 +235,13 @@ class LocalizationNode(Node):
                     best_dist_sq = dist_sq
                     best_landmark = lm
 
-            # 3. Gating (Umbral de aceptación)
-            # Si el landmark más cercano está a > 1.5 metros, no es match.
-            MAX_MATCH_DIST_SQ = 1.5**2 
+            # 2. COMPUERTA (GATING): Aquí está la magia
+            # Antes tenías 1.5**2 (2.25m). ¡Es muchísimo!
+            # Bájalo a 0.5 metros. Si está más lejos, es un objeto nuevo.
+            GATE_DIST_SQ = 0.5**2 
 
-            if best_landmark and best_dist_sq < MAX_MATCH_DIST_SQ:
+            if best_landmark and best_dist_sq < GATE_DIST_SQ:
+                # CASO A: Coincidencia Exitosa -> Usamos para localizar
                 prob = part.get_likelihood(
                     np.array([r, theta]), 
                     best_landmark['mu'], 
@@ -242,12 +250,15 @@ class LocalizationNode(Node):
                 )
                 total_weight *= prob
             else:
-                # Penalización suave por objeto no mapeado o espurio
-                total_weight *= 0.1 
+                # CASO B: Objeto Desconocido (Valija) -> IGNORAR
+                # Antes hacías: total_weight *= 0.1 (Castigo)
+                # Esto mataba a las partículas buenas que veían la valija.
+                # AHORA: No hacemos nada (weight *= 1.0). 
+                # El robot dice: "Veo algo raro, pero no dejo que me confunda".
+                pass 
         
         part.weight *= total_weight
 
-    # --- MÉTODOS DE EXTRACCIÓN (LÓGICA COPIADA DE SLAM) ---
     def get_distance_to_segment(self, point, seg):
         p, a, b = point, seg.e1, seg.e2
         ab, ap = b - a, p - a
@@ -263,7 +274,7 @@ class LocalizationNode(Node):
         for i in range(1, len(leftover_indices)):
             idx, prev_idx = leftover_indices[i], leftover_indices[i-1]
             pt, prev_pt = points[idx], points[prev_idx]
-            if (idx - prev_idx < 5) and (np.linalg.norm(pt - prev_pt) < 0.1): # Cluster thresh 0.1
+            if (idx - prev_idx < 5) and (np.linalg.norm(pt - prev_pt) < 0.1): 
                 current_cluster.append(pt)
             else:
                 if 3 <= len(current_cluster) <= 10: candidates.append(np.array(current_cluster))
@@ -275,7 +286,7 @@ class LocalizationNode(Node):
             centroid = np.mean(cluster_pts, axis=0)
             is_isolated = True
             for seg in segments:
-                if self.get_distance_to_segment(centroid, seg) < 0.35: # Isolation thresh
+                if self.get_distance_to_segment(centroid, seg) < 0.35: 
                     is_isolated = False; break 
             if is_isolated:
                 landmarks.append([np.hypot(centroid[0], centroid[1]), np.arctan2(centroid[1], centroid[0])])
@@ -345,7 +356,6 @@ class LocalizationNode(Node):
             for j in range(i + 1, len(segments)):
                 s1, s2 = segments[i], segments[j]
                 if np.abs(np.dot(s1.v, s2.v)) > np.cos(self.angle_thresh): continue 
-                # Intersección
                 A = np.array([[s1.v[0], -s2.v[0]], [s1.v[1], -s2.v[1]]])
                 b = s2.p0 - s1.p0
                 try: x = np.linalg.solve(A, b); intersection = s1.p0 + x[0] * s1.v
@@ -358,7 +368,6 @@ class LocalizationNode(Node):
                         landmarks.append([np.hypot(intersection[0], intersection[1]), np.arctan2(intersection[1], intersection[0])])
         return np.array(landmarks) if landmarks else np.empty((0, 2))
 
-    # --- FINALIZACIÓN Y VISUALIZACIÓN ---
     def normalize_and_resample(self):
         weights = np.array([p.weight for p in self.particles])
         if np.sum(weights) == 0: weights[:] = 1.0 / len(weights)
@@ -377,9 +386,7 @@ class LocalizationNode(Node):
 
     def publish_results(self):
         best_particle = max(self.particles, key=lambda p: p.weight)
-
         
-        # Publicar TF
         t = TransformStamped()
         t.header.stamp = self.get_clock().now().to_msg()
         t.header.frame_id = "map"; t.child_frame_id = "base_link"
@@ -387,7 +394,6 @@ class LocalizationNode(Node):
         t.transform.rotation = yaw_to_quaternion(best_particle.orientation)
         self.tf_broadcaster.sendTransform(t)
         
-        # Publicar Pose
         ps = PoseStamped()
         ps.header.frame_id = "map"
         ps.header.stamp = self.get_clock().now().to_msg()
@@ -396,7 +402,6 @@ class LocalizationNode(Node):
         ps.pose.orientation = t.transform.rotation
         self.pose_pub.publish(ps)
         
-        # Visualizar Mapa Cargado (Estático)
         ma = MarkerArray()
         for lid, lm in self.known_landmarks.items():
             m = Marker(); m.header.frame_id = "map"; m.header.stamp = self.get_clock().now().to_msg()
@@ -404,8 +409,8 @@ class LocalizationNode(Node):
             m.pose.position.x = float(lm['mu'][0]); m.pose.position.y = float(lm['mu'][1])
             m.scale.x = 0.2; m.scale.y = 0.2; m.scale.z = 0.2
             
-            if lm['type'] == 'segment': m.color.r = 1.0; m.color.a = 0.8 # Rojo: Paredes
-            elif lm['type'] == 'cluster': m.color.g = 1.0; m.color.a = 0.8 # Verde: Objetos
+            if lm['type'] == 'segment': m.color.r = 1.0; m.color.a = 0.8 
+            elif lm['type'] == 'cluster': m.color.g = 1.0; m.color.a = 0.8 
             else: m.color.b = 1.0; m.color.a = 0.5
             ma.markers.append(m)
         self.markers_pub.publish(ma)
@@ -418,3 +423,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

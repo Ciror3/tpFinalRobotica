@@ -6,7 +6,6 @@ import numpy as np
 import heapq
 import json
 import os
-import math
 import cv2 
 
 class PathPlannerNode(Node):
@@ -37,10 +36,9 @@ class PathPlannerNode(Node):
         # Suscriptores y Publicadores
         self.goal_sub = self.create_subscription(PoseStamped, "/goal_pose", self.goal_callback, 10)
         self.pose_sub = self.create_subscription(PoseStamped, "/amcl_pose", self.pose_callback, 10)
-        
+
         self.path_pub = self.create_publisher(Path, "/planned_path", 10)
         self.map_vis_pub = self.create_publisher(OccupancyGrid, "/planning_map", 10)
-        
         # Timer visualización
         self.create_timer(1.0, self.publish_visual_map)
 
@@ -75,11 +73,7 @@ class PathPlannerNode(Node):
             grid[img < 250] = 100  # Paredes y desconocidos son obstáculos
             grid[img >= 250] = 0   # Espacio libre (blanco) es caminable
             
-            # IMPORTANTE: GridMapper guardó la imagen con np.flipud.
-            # OpenCV la lee "tal cual".
-            # RViz pone el origen (0,0) abajo-izquierda.
-            # Las matrices numpy tienen el (0,0) arriba-izquierda.
-            # Para alinear coordenadas, necesitamos invertir el eje Y.
+
             grid = np.flipud(grid)
 
             self.get_logger().info("Mapa PGM cargado y procesado.")
@@ -157,9 +151,8 @@ class PathPlannerNode(Node):
         wy = (gy * self.map_res) + self.map_origin_y
         return wx, wy
 
-    # --- A* (Misma lógica, ajustada a numpy int) ---
-    def astar(self, start, goal):
-        # Si la meta es obstáculo, buscar vecino libre más cercano
+    def astar(self, start, goal, dynamic_obstacles=[]):
+        dynamic_obs =  set(tuple(p) for p in dynamic_obstacles)
         if self.occ_map[goal] >= 50:
             self.get_logger().warn("Meta en obstáculo.")
             return None
@@ -176,7 +169,7 @@ class PathPlannerNode(Node):
             if current == goal:
                 return self.reconstruct_path(came_from, current)
 
-            for neighbor, cost in self.get_neighbors(current):
+            for neighbor, cost in self.get_neighbors(current,dynamic_obs):
                 tentative_g = g_score[current] + cost
                 if neighbor not in g_score or tentative_g < g_score[neighbor]:
                     came_from[neighbor] = current
@@ -186,21 +179,30 @@ class PathPlannerNode(Node):
                     heapq.heappush(open_set, (f, neighbor))
         return None
 
-    def get_neighbors(self, node):
+    def get_neighbors(self, node, dynamic_obstacles):
         y, x = node
         neighbors = []
         moves = [(0,1,1), (0,-1,1), (1,0,1), (-1,0,1), (1,1,1.41), (1,-1,1.41), (-1,1,1.41), (-1,-1,1.41)]
         
         for dy, dx, cost in moves:
             ny, nx = y + dy, x + dx
-            if 0 <= ny < self.rows and 0 <= nx < self.cols:
-                # Transitable si valor < 50
-                if self.occ_map[ny, nx] < 50:
-                    neighbors.append(((ny, nx), cost))
+            if self.occ_map[ny, nx] >= 50:
+                    continue
+            
+            if (ny, nx) in dynamic_obstacles:
+                continue
+                
+            neighbors.append(((ny, nx), cost))
         return neighbors
 
     def heuristic(self, a, b):
-        return math.sqrt((b[0]-a[0])**2 + (b[1]-a[1])**2)
+        D = 1
+        D2 = np.sqrt(2)
+        cy,cx = a
+        gy,gx = b
+        dx = abs(cx - gx)
+        dy = abs(cy - gy)
+        return D * (dx + dy) + (D2 - 2 * D) * min(dx, dy)
 
     def reconstruct_path(self, came_from, current):
         path = [current]
@@ -232,7 +234,6 @@ class PathPlannerNode(Node):
         msg.info.origin.position.x = float(self.map_origin_x)
         msg.info.origin.position.y = float(self.map_origin_y)
         
-        # Aplanar y enviar (-1 para desconocido no se usa aqui, todo es 0 o 100)
         data = self.occ_map.flatten().astype(np.int8)
         msg.data = data.tolist()
         self.map_vis_pub.publish(msg)

@@ -101,7 +101,7 @@ class LocalizationNode(Node):
             self.get_logger().info(f"Mapa cargado correctamente: {len(self.known_landmarks)} landmarks.")
 
         # 2. Configuración
-        self.num_particles = 300 
+        self.num_particles = 100 
         self.particles = [Particle(self.known_landmarks) for _ in range(self.num_particles)]
         
         for p in self.particles:

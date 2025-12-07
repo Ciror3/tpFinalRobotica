@@ -9,6 +9,7 @@ setup.py
 ../../build/tpFinalA/tpFinalA.egg-info/requires.txt
 ../../build/tpFinalA/tpFinalA.egg-info/top_level.txt
 ../../build/tpFinalA/tpFinalA.egg-info/zip-safe
+launch/launch_automatic_navigation.launch.py
 launch/launch_fastslam.launch.py
 resource/tpFinalA
 test/test_copyright.py
@@ -20,5 +21,6 @@ tpFinalA/localization.py
 tpFinalA/navigation.py
 tpFinalA/odometry.py
 tpFinalA/path_planning.py
+tpFinalA/save_landmarks.py
 tpFinalA/save_map.py
 tpFinalA/slam.py
