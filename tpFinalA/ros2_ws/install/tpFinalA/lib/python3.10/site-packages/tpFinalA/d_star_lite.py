@@ -239,7 +239,6 @@ class DStarLite:
             min_c = float('inf')
             best_n = None
             
-            # Gradient descent local
             for n, cost in self.get_neighbors(curr):
                 c = cost + self.g.get(n, float('inf'))
                 if c < min_c:

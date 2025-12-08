@@ -1,7 +1,7 @@
 import numpy as np    
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Quaternion, Point, PoseStamped, TransformStamped
+from geometry_msgs.msg import Quaternion, Point, PoseStamped, TransformStamped, PoseWithCovarianceStamped
 from visualization_msgs.msg import Marker, MarkerArray
 from sensor_msgs.msg import LaserScan
 from tf2_ros import TransformBroadcaster
@@ -12,21 +12,50 @@ import json
 import os
 import copy
 
-# --- FUNCIONES MATEMÁTICAS ---
 def yaw_to_quaternion(yaw):
+    """
+    Converts a yaw angle (in radians) to a geometry_msgs/Quaternion.
+    
+    Args:
+        yaw (float): Angle in radians.
+        
+    Returns:
+        Quaternion: The resulting quaternion.
+    """
     q = Quaternion()
     q.w = math.cos(yaw * 0.5); q.x = 0.0; q.y = 0.0; q.z = math.sin(yaw * 0.5)
     return q
 
+def quaternion_to_yaw(q: Quaternion) -> float:
+    """
+    Converts a geometry_msgs/Quaternion to a yaw angle (in radians).
+    
+    Args:
+        q (Quaternion): The quaternion to convert.
+        
+    Returns:
+        float: The yaw angle in radians.
+    """
+    siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+    cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+    return math.atan2(siny_cosp, cosy_cosp)
+
 def wrap(a): 
+    """
+    Normalizes an angle to the range [-pi, pi].
+    
+    Args:
+        a (float): The angle in radians.
+        
+    Returns:
+        float: The normalized angle.
+    """
     return (a + np.pi) % (2*np.pi) - np.pi
 
-# --- CLASE SEGMENTO ---
 class LineSegment:
     def __init__(self, m, n, p0, v, e1=None, e2=None):
         self.m = m; self.n = n; self.p0 = p0; self.v = v; self.e1 = e1; self.e2 = e2
 
-# --- CLASE PARTÍCULA (MODO LOCALIZACIÓN) ---
 class Particle():
     def __init__(self, static_map_ref=None):
         self.x = 0.0
@@ -37,11 +66,26 @@ class Particle():
         self.landmarks = static_map_ref if static_map_ref else {}
 
     def set(self, new_x, new_y, new_orientation):
+        """
+        Sets the particle's state.
+        
+        Args:
+            new_x (float): New X position.
+            new_y (float): New Y position.
+            new_orientation (float): New orientation in radians.
+        """
         self.x = float(new_x)
         self.y = float(new_y)
         self.orientation = float(new_orientation)
 
     def move_odom(self, odom, alpha):
+        """
+        Updates the particle's pose based on odometry delta measurements and a noise model.
+        
+        Args:
+            odom (list): A list [dist, dr1, dr2] representing displacement and rotations.
+            alpha (list): Noise parameters for the motion model.
+        """
         dist, dr1, dr2 = odom
         varRot1 = alpha[0]*abs(dr1) + alpha[1]*dist
         varRot2 = alpha[0]*abs(dr2) + alpha[1]*dist
@@ -56,6 +100,18 @@ class Particle():
         self.orientation += dr1_hat + dr2_hat
 
     def get_likelihood(self, z, landmark_mu, landmark_sigma, R):
+        """
+        Calculates the measurement likelihood of an observation given a landmark.
+        
+        Args:
+            z (np.array): The observation vector [range, bearing].
+            landmark_mu (np.array): The landmark's mean position [x, y].
+            landmark_sigma (np.array): The landmark's covariance matrix.
+            R (np.array): The sensor noise covariance matrix.
+            
+        Returns:
+            float: The probability density of the observation.
+        """
         dx = landmark_mu[0] - self.x
         dy = landmark_mu[1] - self.y
         q = max(dx*dx + dy*dy, 1e-12)
@@ -84,6 +140,12 @@ class Particle():
             return 1e-12
 
     def copy_particle(self):
+        """
+        Creates a deep copy of the particle.
+        
+        Returns:
+            Particle: A new particle instance with identical state.
+        """
         p = Particle(self.landmarks) 
         p.x = self.x
         p.y = self.y
@@ -101,26 +163,28 @@ class LocalizationNode(Node):
         else:
             self.get_logger().info(f"Mapa cargado correctamente: {len(self.known_landmarks)} landmarks.")
 
-        # 2. Configuración
         self.num_particles = 100 
         self.particles = [Particle(self.known_landmarks) for _ in range(self.num_particles)]
         
         for p in self.particles:
-            p.x = 0.0 # Posición inicial fija
-            p.y = 0.0 # Posición inicial fija
-            p.orientation = 0.0 # Orientación inicial fija
-            # p.x = np.random.normal(0, 0.1)
-            # p.y = np.random.normal(0, 0.1)
-            # p.orientation = np.random.normal(0, 0.05)
+            p.x = 0.0
+            p.y = 0.0
+            p.orientation = 0.0
 
         self.R = np.diag([0.1, 0.05])
 
         self.delta_sub = self.create_subscription(DeltaOdom, "/delta", self.delta_odom_callback, 10)
         self.scan_sub = self.create_subscription(LaserScan, "/scan", self.scan_callback, qos_profile_sensor_data)
         
+        self.initialpose_sub = self.create_subscription(
+            PoseWithCovarianceStamped,
+            "/initialpose",
+            self.initialpose_callback,
+            10
+        )
+
         self.pose_pub = self.create_publisher(PoseStamped, "/amcl_pose", 10)
         self.markers_pub = self.create_publisher(MarkerArray, "/localization/markers", 10)
-        
         self.segments_pub = self.create_publisher(MarkerArray, "/localization/extracted_segments", 10)
         
         self.tf_broadcaster = TransformBroadcaster(self)
@@ -128,7 +192,39 @@ class LocalizationNode(Node):
         self.Pmin = 18; self.Lmin = 0.34; self.eps = 0.03; self.Snum = 8; self.delta = 0.1
         self.corner_thresh = 0.5; self.angle_thresh = np.deg2rad(30)
 
+        self.received_initial_pose = False
+
+    def initialpose_callback(self, msg: PoseWithCovarianceStamped):
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
+        yaw = quaternion_to_yaw(msg.pose.pose.orientation)
+
+        sigma_x = 0.1   
+        sigma_y = 0.1  
+        sigma_yaw = 0.05 
+
+        self.get_logger().info(
+            f"Recibido initialpose de RViz: x={x:.2f}, y={y:.2f}, yaw={yaw:.2f} rad"
+        )
+
+        for p in self.particles:
+            p.x = np.random.normal(x, sigma_x)
+            p.y = np.random.normal(y, sigma_y)
+            p.orientation = wrap(np.random.normal(yaw, sigma_yaw))
+            p.weight = 1.0 / self.num_particles
+
+        self.received_initial_pose = True
+
     def load_map(self, filename):
+        """
+        Loads landmarks from a JSON file.
+        
+        Args:
+            filename (str): Path to the .json file.
+            
+        Returns:
+            dict: A dictionary of landmarks keyed by ID.
+        """
         if not os.path.exists(filename): return {}
         with open(filename, 'r') as f:
             data = json.load(f)
@@ -145,7 +241,7 @@ class LocalizationNode(Node):
         noise = [0.05, 0.05, 0.05, 0.05] 
         delta_odom = [msg.dt, msg.dr1, msg.dr2]
         if abs(msg.dt) > 0.001 or abs(msg.dr1) > 0.001:
-           pass # self.get_logger().info(f"Moviendo: {msg.dt:.3f}, {msg.dr1:.3f}")
+           pass 
         for p in self.particles:
             p.move_odom(delta_odom, noise)
         self.publish_results()
@@ -182,21 +278,27 @@ class LocalizationNode(Node):
         self.publish_results()
 
     def publish_extracted_segments(self, segments, header):
-        """ Convierte LineSegment a MarkerArray y publica """
+        """
+        Publishes extracted line segments as markers for visualization.
+        
+        Args:
+            segments (list): List of LineSegment objects.
+            header (std_msgs/Header): Header info from the scan message.
+        """
         ma = MarkerArray()
         current_time = self.get_clock().now().to_msg()
         
         for i, seg in enumerate(segments):
             m = Marker()
-            m.header.frame_id = header.frame_id # Mismo frame (base_scan)
-            m.header.stamp = current_time       # <--- CAMBIO AQUÍ
+            m.header.frame_id = header.frame_id 
+            m.header.stamp = current_time       
             
             m.ns = "raw_segments"
             m.id = i
             m.type = Marker.LINE_STRIP
             m.action = Marker.ADD
             m.scale.x = 0.05
-            m.color.r = 1.0; m.color.g = 1.0; m.color.b = 0.0; m.color.a = 1.0 # Amarillo
+            m.color.r = 1.0; m.color.g = 1.0; m.color.b = 0.0; m.color.a = 1.0 
             
             p1 = Point(x=float(seg.e1[0]), y=float(seg.e1[1]), z=0.0)
             p2 = Point(x=float(seg.e2[0]), y=float(seg.e2[1]), z=0.0)
@@ -207,9 +309,15 @@ class LocalizationNode(Node):
         self.segments_pub.publish(ma)
 
     def update_particle_weight(self, part, observations):
+        """
+        Updates the weight of a particle based on the likelihood of observations.
+        
+        Args:
+            part (Particle): The particle to update.
+            observations (list): A list of observations [(r, theta, type), ...].
+        """
         total_weight = 1.0
         
-        # Pre-calcular posición global del sensor
         sensor_x = part.x + 0.1 * np.cos(part.orientation)
         sensor_y = part.y + 0.1 * np.sin(part.orientation)
 
@@ -220,10 +328,7 @@ class LocalizationNode(Node):
             best_dist_sq = float('inf')
             best_landmark = None
 
-            # 1. Búsqueda del vecino más cercano
             for lid, lm in part.landmarks.items():
-                # FILTRO DE TIPO: No confundir un punto (cluster) con una pared (segment)
-                # Si la valija se ve como 'cluster', no la compares con 'segment'
                 if lm['type'] != 'unknown' and lm['type'] != obs_type:
                     continue
                 
@@ -235,13 +340,9 @@ class LocalizationNode(Node):
                     best_dist_sq = dist_sq
                     best_landmark = lm
 
-            # 2. COMPUERTA (GATING): Aquí está la magia
-            # Antes tenías 1.5**2 (2.25m). ¡Es muchísimo!
-            # Bájalo a 0.5 metros. Si está más lejos, es un objeto nuevo.
             GATE_DIST_SQ = 0.5**2 
 
             if best_landmark and best_dist_sq < GATE_DIST_SQ:
-                # CASO A: Coincidencia Exitosa -> Usamos para localizar
                 prob = part.get_likelihood(
                     np.array([r, theta]), 
                     best_landmark['mu'], 
@@ -250,16 +351,21 @@ class LocalizationNode(Node):
                 )
                 total_weight *= prob
             else:
-                # CASO B: Objeto Desconocido (Valija) -> IGNORAR
-                # Antes hacías: total_weight *= 0.1 (Castigo)
-                # Esto mataba a las partículas buenas que veían la valija.
-                # AHORA: No hacemos nada (weight *= 1.0). 
-                # El robot dice: "Veo algo raro, pero no dejo que me confunda".
                 pass 
         
         part.weight *= total_weight
 
     def get_distance_to_segment(self, point, seg):
+        """
+        Calculates the perpendicular distance from a point to a line segment.
+        
+        Args:
+            point (np.array): The point coordinates [x, y].
+            seg (LineSegment): The line segment object.
+            
+        Returns:
+            float: The distance.
+        """
         p, a, b = point, seg.e1, seg.e2
         ab, ap = b - a, p - a
         len_sq = np.dot(ab, ab)
@@ -268,6 +374,17 @@ class LocalizationNode(Node):
         return np.linalg.norm(p - (a + t * ab))
 
     def extract_point_landmarks(self, points, used_mask, segments):
+        """
+        Extracts point-like landmarks from scan points that were not part of any segment.
+        
+        Args:
+            points (np.array): Array of all scan points in Cartesian coordinates.
+            used_mask (np.array): Boolean mask indicating which points belong to segments.
+            segments (list): List of extracted segments to check isolation.
+            
+        Returns:
+            np.array: Array of landmarks in polar coordinates [r, theta].
+        """
         leftover_indices = np.where(~used_mask)[0]
         if len(leftover_indices) == 0: return np.empty((0, 2))
         candidates = []; current_cluster = [points[leftover_indices[0]]]
@@ -293,6 +410,16 @@ class LocalizationNode(Node):
         return np.array(landmarks) if landmarks else np.empty((0, 2))
     
     def extract_segments(self, points, angles):
+        """
+        Extracts line segments from scan data using a seed-growing algorithm (Split-and-Merge variant).
+        
+        Args:
+            points (np.array): Array of scan points.
+            angles (np.array): Array of corresponding scan angles.
+            
+        Returns:
+            tuple: (list of LineSegment, boolean mask of used points).
+        """
         segments = []; N = len(points); used_mask = np.zeros(N, dtype=bool); start = 0
         while start < N - self.Pmin:
             res = self.seed_segment_detection(points[start:], angles[start:], self.eps, self.delta, self.Snum, self.Pmin)
@@ -309,6 +436,20 @@ class LocalizationNode(Node):
         return self.process_overlaps(points, segments), used_mask
 
     def seed_segment_detection(self, points, angles, eps, delta, S, P):
+        """
+        Finds a seed segment within a subset of points.
+        
+        Args:
+            points (np.array): Points to search.
+            angles (np.array): Angles corresponding to points.
+            eps (float): Maximum distance from line.
+            delta (float): Maximum gap between predicted and actual points.
+            S (int): Seed length.
+            P (int): Minimum points for a segment.
+            
+        Returns:
+            tuple: (start_idx, end_idx, origin, direction_vector) or None.
+        """
         Np = len(points)
         for i in range(Np-P):
             j = i + S
@@ -330,6 +471,20 @@ class LocalizationNode(Node):
         _,_,vt = np.linalg.svd(pts - p0); v = vt[0] / np.linalg.norm(vt[0])
         return p0,v
     def grow_region(self, points, i, j, eps, Pmin, Lmin):
+        """
+        Expands a seed segment to include collinear points.
+        
+        Args:
+            points (np.array): All points.
+            i (int): Start index of seed.
+            j (int): End index of seed.
+            eps (float): Tolerance.
+            Pmin (int): Min points.
+            Lmin (float): Min length.
+            
+        Returns:
+            dict: Segment details or None.
+        """
         Np = len(points); Pb, Pf = i, j; p0, v = self.fit_seed(points, Pb, Pf)
         k = Pf + 1
         while k < Np and self.point_to_line_distance(points[k],p0,v) < eps: Pf = k; p0,v = self.fit_seed(points,Pb,Pf); k+=1
@@ -338,6 +493,16 @@ class LocalizationNode(Node):
         if (np.linalg.norm(points[Pf] - points[Pb]) >= Lmin) and (Pf - Pb + 1 >= Pmin): return {"Pb": Pb, "Pf": Pf, "p0": p0, "v": v}
         return None
     def process_overlaps(self, points, segments):
+        """
+        Resolves overlapping segments by assigning points to the closest line.
+        
+        Args:
+            points (np.array): All points.
+            segments (list): List of detected segments.
+            
+        Returns:
+            list: Refined list of segments.
+        """
         if len(segments) <= 1: return segments
         for i in range(len(segments)-1):
             l_i, l_j = segments[i], segments[i + 1]
@@ -351,6 +516,15 @@ class LocalizationNode(Node):
         return segments
 
     def segments_to_landmarks(self, segments):
+        """
+        Converts intersecting segments into corner landmarks.
+        
+        Args:
+            segments (list): List of segments.
+            
+        Returns:
+            np.array: Array of corner landmarks in polar coordinates.
+        """
         landmarks = []
         for i in range(len(segments)):
             for j in range(i + 1, len(segments)):
@@ -369,6 +543,9 @@ class LocalizationNode(Node):
         return np.array(landmarks) if landmarks else np.empty((0, 2))
 
     def normalize_and_resample(self):
+        """
+        Normalizes particle weights and performs resampling if effective particle count is low.
+        """
         weights = np.array([p.weight for p in self.particles])
         if np.sum(weights) == 0: weights[:] = 1.0 / len(weights)
         else: weights /= np.sum(weights)
@@ -385,6 +562,9 @@ class LocalizationNode(Node):
             self.particles = [self.particles[i].copy_particle() for i in indices]
 
     def publish_results(self):
+        """
+        Publishes the best particle pose, map transformation, and landmark markers.
+        """
         best_particle = max(self.particles, key=lambda p: p.weight)
         
         t = TransformStamped()
@@ -423,4 +603,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

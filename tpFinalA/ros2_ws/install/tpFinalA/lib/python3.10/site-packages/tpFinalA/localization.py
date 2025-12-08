@@ -1,7 +1,7 @@
 import numpy as np    
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Quaternion, Point, PoseStamped, TransformStamped
+from geometry_msgs.msg import Quaternion, Point, PoseStamped, TransformStamped, PoseWithCovarianceStamped
 from visualization_msgs.msg import Marker, MarkerArray
 from sensor_msgs.msg import LaserScan
 from tf2_ros import TransformBroadcaster
@@ -17,6 +17,12 @@ def yaw_to_quaternion(yaw):
     q = Quaternion()
     q.w = math.cos(yaw * 0.5); q.x = 0.0; q.y = 0.0; q.z = math.sin(yaw * 0.5)
     return q
+
+def quaternion_to_yaw(q: Quaternion) -> float:
+    siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+    cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+    return math.atan2(siny_cosp, cosy_cosp)
+
 
 def wrap(a): 
     return (a + np.pi) % (2*np.pi) - np.pi
@@ -105,28 +111,62 @@ class LocalizationNode(Node):
         self.num_particles = 100 
         self.particles = [Particle(self.known_landmarks) for _ in range(self.num_particles)]
         
+        # Pose inicial por defecto (si no se recibe /initialpose)
         for p in self.particles:
-            p.x = 0.0 # Posición inicial fija
-            p.y = 0.0 # Posición inicial fija
-            p.orientation = 0.0 # Orientación inicial fija
-            # p.x = np.random.normal(0, 0.1)
-            # p.y = np.random.normal(0, 0.1)
-            # p.orientation = np.random.normal(0, 0.05)
+            p.x = 0.0
+            p.y = 0.0
+            p.orientation = 0.0
 
         self.R = np.diag([0.1, 0.05])
 
         self.delta_sub = self.create_subscription(DeltaOdom, "/delta", self.delta_odom_callback, 10)
         self.scan_sub = self.create_subscription(LaserScan, "/scan", self.scan_callback, qos_profile_sensor_data)
         
+        # 👇 NUEVO: suscripción al initial pose de RViz
+        self.initialpose_sub = self.create_subscription(
+            PoseWithCovarianceStamped,
+            "/initialpose",
+            self.initialpose_callback,
+            10
+        )
+
         self.pose_pub = self.create_publisher(PoseStamped, "/amcl_pose", 10)
         self.markers_pub = self.create_publisher(MarkerArray, "/localization/markers", 10)
-        
         self.segments_pub = self.create_publisher(MarkerArray, "/localization/extracted_segments", 10)
         
         self.tf_broadcaster = TransformBroadcaster(self)
 
         self.Pmin = 18; self.Lmin = 0.34; self.eps = 0.03; self.Snum = 8; self.delta = 0.1
         self.corner_thresh = 0.5; self.angle_thresh = np.deg2rad(30)
+
+        # Flag por si querés ignorar mediciones/odometría hasta recibir initialpose
+        self.received_initial_pose = False
+
+    def initialpose_callback(self, msg: PoseWithCovarianceStamped):
+        # Pose promedio que clickeaste en RViz
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
+        yaw = quaternion_to_yaw(msg.pose.pose.orientation)
+
+        # Podrías leer la covarianza real del mensaje, pero para TP alcanza
+        # con definir tus propios desvíos estándar:
+        sigma_x = 0.1   # [m]
+        sigma_y = 0.1   # [m]
+        sigma_yaw = 0.05  # [rad]
+
+        self.get_logger().info(
+            f"Recibido initialpose de RViz: x={x:.2f}, y={y:.2f}, yaw={yaw:.2f} rad"
+        )
+
+        # Reinicializar partículas alrededor de esa pose
+        for p in self.particles:
+            p.x = np.random.normal(x, sigma_x)
+            p.y = np.random.normal(y, sigma_y)
+            p.orientation = wrap(np.random.normal(yaw, sigma_yaw))
+            p.weight = 1.0 / self.num_particles
+
+        self.received_initial_pose = True
+
 
     def load_map(self, filename):
         if not os.path.exists(filename): return {}
